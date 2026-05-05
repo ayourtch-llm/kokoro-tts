@@ -17,11 +17,22 @@ fn fold_weight_norm_conv1d(
         return conv1d(in_channels, out_channels, kernel_size, cfg, vb);
     }
 
-    let weight_g = vb.get((out_channels, 1, 1), "parametrizations.weight.original0")?;
-    let weight_v = vb.get(
-        (out_channels, in_channels / cfg.groups, kernel_size),
-        "parametrizations.weight.original1",
-    )?;
+    let weight_g = if vb.contains_tensor("weight_g") {
+        vb.get((out_channels, 1, 1), "weight_g")?
+    } else {
+        vb.get((out_channels, 1, 1), "parametrizations.weight.original0")?
+    };
+    let weight_v = if vb.contains_tensor("weight_v") {
+        vb.get(
+            (out_channels, in_channels / cfg.groups, kernel_size),
+            "weight_v",
+        )?
+    } else {
+        vb.get(
+            (out_channels, in_channels / cfg.groups, kernel_size),
+            "parametrizations.weight.original1",
+        )?
+    };
     let denom = weight_v.sqr()?.sum_keepdim((1, 2))?.sqrt()?;
     let weight = weight_v.broadcast_div(&denom)?.broadcast_mul(&weight_g)?;
     let bias = vb.get(out_channels, "bias")?;

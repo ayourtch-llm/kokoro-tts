@@ -13,6 +13,11 @@ import torch
 from safetensors.torch import save_file
 
 
+def normalize_key(key: str) -> str:
+    """Normalize PyTorch module wrapper keys to the Rust loader layout."""
+    return key.replace(".module.", ".", 1)
+
+
 def convert_pth_to_safetensors(pth_path: str, output_path: str) -> None:
     """Convert PyTorch .pth to safetensors format."""
     print(f"Loading {pth_path}...")
@@ -24,13 +29,13 @@ def convert_pth_to_safetensors(pth_path: str, output_path: str) -> None:
     for module_name, params in state_dict.items():
         if isinstance(params, dict):
             for param_name, tensor in params.items():
-                key = f"{module_name}.{param_name}"
+                key = normalize_key(f"{module_name}.{param_name}")
                 if isinstance(tensor, torch.Tensor):
                     flat[key] = tensor.cpu().contiguous()
                 else:
                     print(f"  WARNING: skipping non-tensor {key}")
         else:
-            flat[module_name] = params.cpu().contiguous()
+            flat[normalize_key(module_name)] = params.cpu().contiguous()
 
     print(f"Saving {len(flat)} tensors to {output_path}...")
     save_file(flat, output_path)
