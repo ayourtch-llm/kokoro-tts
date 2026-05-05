@@ -69,7 +69,7 @@ This was misread on the first audit pass as "a thin wrapper around `candle_trans
 1. **Factorized embedding.** Vocab IDs go through an `Embedding(vocab_size, embedding_size)` (small, e.g. 128) and then a `Linear(embedding_size, hidden_size)` projection up to the transformer hidden width. This contrasts with BERT, which embeds straight into `hidden_size`. The HuggingFace-equivalent state-dict keys are `embeddings.word_embeddings.weight`, `embeddings.position_embeddings.weight`, `embeddings.token_type_embeddings.weight`, `embeddings.LayerNorm.{weight,bias}`, then a separate `encoder.embedding_hidden_mapping_in.{weight,bias}` for the project-up. Kokoro's `config.plbert` has `hidden_size` but `embedding_size` may be implicit (often hidden_size for ALBERT-style — verify by dumping safetensors keys early).
 2. **Cross-layer parameter sharing.** A single transformer block is reused `num_hidden_layers` times rather than instantiating `num_hidden_layers` distinct blocks (this is the entire point of ALBERT — parameter count stays small). State-dict-wise: keys live under `encoder.albert_layer_groups.0.albert_layers.0.<...>` (single group, single inner layer). Implementation-wise: load one block, call it `num_hidden_layers` times in the forward pass.
 
-The transformer block itself is canonical: pre/post LayerNorm + multi-head self-attention + feed-forward (typically GELU). Token type embeddings are a no-op for Kokoro (`type_vocab_size = 1` per `config.rs:62`) but must still be wired since the converted weights include them.
+The transformer block itself is canonical: pre/post LayerNorm + multi-head self-attention + feed-forward (typically GELU). Token type embeddings are wired through but used only for the BOS/EOS slots in our single-batch path. **Important correction from codex's stage-3 work:** the converted state-dict has `bert.embeddings.token_type_embeddings.weight` of shape `[2, embedding_size]`, **not** `[1, embedding_size]`. Local `AlbertConfig.type_vocab_size` must be `2` to load this correctly. The earlier draft of this brief said `1`; that was wrong (Kokoro's HF `config.json` has no explicit `type_vocab_size` field, so the actual value comes from inspecting the converted weights — codex did and committed the fix).
 
 **Reference implementations:**
 - Candle's `candle-transformers/src/models/bert.rs` — the closest existing template; copy structure, then add factorized embedding + the layer-sharing twist.
@@ -115,6 +115,7 @@ The encode + 4-decode-block pipeline structure matches upstream Decoder (istftne
 - All Conv1d in `AdainResBlk1d` (`conv1`, `conv2`, `conv1x1`) and the `pool` ConvTranspose1d are weight-normed upstream (istftnet.py:355,356,360,352). Same folding decision applies pervasively.
 - `decoder.rs::AdaIN1d` (lines 16-36) is the same broken pattern as in `predictor.rs` — local `instance_norm1d` helper has no learnable affine params, but upstream `nn.InstanceNorm1d(num_features, affine=True)` (istftnet.py:24, with explicit "we kept affine=True for ONNX compatibility" comment) means converted state-dict has `*.norm.weight` and `*.norm.bias` keys this code silently skips. Same as review queue item #6 — fix in both files at once.
 - `decoder.rs::Decoder::load` channel arithmetic `1024 + 2 + 64` matches upstream (istftnet.py:396-399). No fix needed there.
+- `decoder.rs::Decoder::forward` fusion logic verified against upstream (istftnet.py:407-421) line-for-line: `f0_conv(f0.unsqueeze(1))` → `n_conv(n.unsqueeze(1))` → `cat([asr, f0, n], dim=1)` → `encode(x, s)` → loop with `res` flag controlling whether to re-cat `[x, asr_res, f0, n]` before each `block(x, s)` → flip `res = false` after the upsample block. Identical structure. No fix needed in the forward body — the only outstanding work here is appending the Generator call after the decode loop (see §5).
 
 ### `src/model/mod.rs` — bails after duration
 
@@ -129,6 +130,37 @@ The encode + 4-decode-block pipeline structure matches upstream Decoder (istftne
 The heaviest single piece. The decoder front-end (asr + f0 + n + style fusion through 4 AdainResBlk1d) produces conditioned features; the **Generator** (`istftnet.py:257-326`) turns those into a waveform via an NSF source + multi-stage upsampling + iSTFT. Currently entirely absent in `decoder.rs`.
 
 Read `kokoro/istftnet.py` (421 lines) end-to-end before writing. The key insights from that read are below — they're load-bearing and several are not obvious from "iSTFTNet" alone.
+
+### 5.0. Concrete constants for Kokoro-82M
+
+Pulled directly from `hexgrad/Kokoro-82M/config.json` so codex doesn't have to wait for the model download to plan shapes:
+
+| Constant | Value | Where it shows up |
+|----------|-------|-------------------|
+| `upsample_rates` | `[10, 6]` | `Generator.ups` strides; `num_upsamples = 2` |
+| `upsample_kernel_sizes` | `[20, 12]` | `Generator.ups` kernel sizes |
+| `resblock_kernel_sizes` | `[3, 7, 11]` | per-stage MRF kernels; `num_kernels = 3` |
+| `resblock_dilation_sizes` | `[[1,3,5], [1,3,5], [1,3,5]]` | per-kernel dilation triples inside each `AdaINResBlock1` |
+| `upsample_initial_channel` | `512` | channel at start of generator; halved each upsample |
+| `gen_istft_n_fft` | `20` | iSTFT filter length / window |
+| `gen_istft_hop_size` | `5` | iSTFT hop |
+| `style_dim` | `128` | each AdaIN1d style input |
+| `hidden_dim` | `512` | predictor / decoder feature width |
+| `n_layer` | `3` | predictor.text_encoder LSTM-stack depth |
+| `max_dur` | `50` | duration_proj output channels |
+| `n_token` | `178` | vocab size for embeddings |
+
+Derived:
+- Total upsample factor: `prod(upsample_rates) * gen_istft_hop_size = 10 * 6 * 5 = 300` audio samples per duration frame (matches the §2 architecture note: 1 frame ≈ 12.5 ms @ 24 kHz).
+- Generator channel progression: `512 → 256 → 128` (`upsample_initial_channel // 2^i`). `ch` after stage 0 = 256, after stage 1 = 128.
+- Total `Generator.resblocks` instances: `num_upsamples * num_kernels = 2 * 3 = 6` (state-dict keys `resblocks.{0..5}.*`).
+- For `noise_convs[0]` (i=0, not last stage): `stride_f0 = prod(upsample_rates[1:]) = 6`, kernel = `12`, padding = `(6+1)//2 = 3`, in_ch = `gen_istft_n_fft + 2 = 22`, out_ch = `256`.
+- For `noise_convs[1]` (i=1, last stage): kernel = `1`, in_ch = `22`, out_ch = `128`.
+- `noise_res[0]` = `AdaINResBlock1(256, kernel=7, dilations=[1,3,5], style_dim=128)`.
+- `noise_res[1]` = `AdaINResBlock1(128, kernel=11, dilations=[1,3,5], style_dim=128)`.
+- `conv_post`: `Conv1d(128, gen_istft_n_fft + 2 = 22, kernel=7, padding=3)` (weight-normed).
+- Output split: `spec = exp(x[:, :11, :])`, `phase = sin(x[:, 11:, :])` (each `[B, 11, T_audio]` since `n_fft//2 + 1 = 11`).
+- NSF source: `harmonic_num = 8`, `voiced_threshold = 10` (hard-coded in upstream `Generator.__init__` at istftnet.py:265, not config-driven), `sampling_rate = 24000`, `upsample_scale = 300`.
 
 ### 5.1. Two distinct AdaIN block classes — don't conflate
 
@@ -149,6 +181,14 @@ where `a` is a learnable `[1, channels, 1]` parameter (initialized to ones, see 
 
 Numerical caveat: when `alpha` is near zero, `1/alpha` blows up. Upstream relies on alpha being trained away from zero; do not add a clamp/eps unless validation receipts force it (and document if you do).
 
+**Rust callsite pre-flag** (codex hasn't started this yet — read before implementing AdaINResBlock1):
+
+- Snake1D fires **6 times per `AdaINResBlock1.forward()` call** — twice per sub-block (after norm1 and after norm2), three sub-blocks per forward. Each call uses a *different* learnable alpha tensor (`alpha1.{0,1,2}` for the post-norm1 calls, `alpha2.{0,1,2}` for the post-norm2 calls). Don't share alpha across sub-blocks.
+- Order inside each sub-block (istftnet.py:69-76): `xt = norm1(x, s) → snake(xt, alpha1[i]) → conv1(xt) → norm2(xt, s) → snake(xt, alpha2[i]) → conv2(xt) → x = xt + x`. Snake is *between* norm and conv, not before norm or after conv.
+- State-dict load: `alpha1.{0,1,2}` and `alpha2.{0,1,2}` are stored *directly* as parameters (no `.weight` suffix — they're `nn.Parameter`, not `nn.Linear`). In candle this is `vb.pp("alpha1.0").get((1, channels, 1), "")?` — the empty string is the param name within the prefix. Don't try `vb.pp("alpha1").get(..., "0")?` — that won't match the flattened state-dict layout the converter produces.
+- Suggested Rust shape: a `Snake1D { alpha: Tensor }` struct with `forward(&self, x: &Tensor) -> Result<Tensor>`. Or a free function `snake1d(x: &Tensor, alpha: &Tensor) -> Result<Tensor>` if you'd rather not box it. Either works; struct is cleaner if you need to validate alpha shape on load.
+- Validation pattern: dump `(x, alpha) → snake1d(x, alpha)` from upstream on random input first (one isolated check before plugging into AdaINResBlock1). Stage-10 receipts will hide a snake bug behind 5 other things; the standalone check localizes it.
+
 ### 5.3. NSF source path (istftnet.py:108-254 + Generator forward)
 
 Flow:
@@ -161,22 +201,51 @@ The `har` tensor is what `noise_convs[i]` consume — it is **STFT'd source feat
 
 ### 5.4. Generator forward (istftnet.py:299-325)
 
+Shapes annotated assuming Kokoro constants (§5.0). `T_dec = sum(pred_dur)` is the time dim of decoder front-end output. The generator upsample stack produces `T_pre_istft = T_dec * 60` frames (= `T_dec * prod(upsample_rates)`); the iSTFT does the final 5× via `hop_size`, yielding `T_audio = T_dec * 300` audio samples. `T_stft = T_pre_istft = T_dec * 60` for the source-path STFT (same hop). Exact frame counts at stage boundaries depend on padding details and need empirical verification once codex runs the upstream reference; the annotations below are correct to within ±1 frame at boundaries.
+
 ```
-for i in 0..num_upsamples:
+# Inputs to Generator.forward(x, s, F0_curve):
+#   x        : [B, 512, T_dec]   — output of Decoder front-end (post 4-decode-block loop)
+#   s        : [B, 128]          — s_dec = ref_s[:, :128]
+#   F0_curve : [B, T_dec]        — F0 from predictor.F0Ntrain
+
+# === NSF source path (computed inside Generator.forward, with no_grad) ===
+f0    = f0_upsamp(F0_curve.unsqueeze(1)).transpose(1, 2)
+                                       # [B, T_audio, 1]   T_audio = T_dec * 300
+har_source, _, _ = m_source(f0)        # [B, T_audio, 1]
+har_source = har_source.transpose(1,2).squeeze(1)
+                                       # [B, T_audio]
+har_spec, har_phase = stft.transform(har_source)
+                                       # each [B, 11, T_stft]   freq_bins = 20//2+1 = 11; T_stft ≈ T_dec*60
+har = cat([har_spec, har_phase], dim=1)
+                                       # [B, 22, T_stft]
+
+# === Per-upsample-stage loop, num_upsamples = 2 ===
+# Stage i = 0  (ch_in = 512, ch_out = 256, stride = 10, kernel = 20)
+# Stage i = 1  (ch_in = 256, ch_out = 128, stride = 6,  kernel = 12)  — last stage
+for i in 0..2:
     x = leaky_relu(x, 0.1)
-    x_source = noise_convs[i](har)        # downsample har to current resolution
-    x_source = noise_res[i](x_source, s)  # AdaINResBlock1, conditions on style
-    x = ups[i](x)                         # ConvTranspose1d upsample (weight-normed)
-    if i == num_upsamples - 1:
-        x = reflection_pad(x)             # ReflectionPad1d((1, 0)) only on last stage
-    x = x + x_source
-    xs = sum(resblocks[i*num_kernels + j](x, s) for j in 0..num_kernels) / num_kernels
-    x = xs                                # MRF: average across kernel sizes
+    x_source = noise_convs[i](har)        # i=0: [B, 256, ~T_dec*10]; i=1: [B, 128, T_stft] = [B, 128, ~T_dec*60]
+    x_source = noise_res[i](x_source, s)  # AdaINResBlock1; same shape out
+    x = ups[i](x)                         # ConvTranspose1d upsample by upsample_rates[i]
+                                          # i=0: [B, 256, ~T_dec*10]; i=1: [B, 128, ~T_dec*60]
+    if i == 1:                            # last stage only
+        x = reflection_pad(x)             # ReflectionPad1d((1, 0)): +1 frame on left, 0 on right
+                                          # shape becomes [B, 128, ~T_dec*60 + 1]; the +1 reconciles
+                                          # an off-by-one between ups output and noise_conv output —
+                                          # verify empirically; this is the kind of detail that bites
+    x = x + x_source                      # shapes must match — see reflection_pad note above
+    xs = sum(resblocks[i*3 + j](x, s) for j in 0..3) / 3
+                                          # MRF: average AdaINResBlock1 outputs across kernels [3,7,11]
+    x = xs                                # same shape as input
+
+# === Post-processing → spectrogram → iSTFT ===
 x = leaky_relu(x)
-x = conv_post(x)                          # Conv1d → [B, n_fft + 2, T_audio]
-spec  = exp(x[:, :n_fft//2 + 1, :])      # magnitude — exp ensures positivity
-phase = sin(x[:, n_fft//2 + 1:, :])      # phase — sin keeps in [-1, 1]
-return stft.inverse(spec, phase)
+x = conv_post(x)                          # Conv1d(128, 22, kernel=7, padding=3, weight_norm)
+                                          # [B, 22, T_pre_istft]   T_pre_istft ≈ T_dec*60
+spec  = exp(x[:, :11, :])                 # [B, 11, T_pre_istft]
+phase = sin(x[:, 11:, :])                 # [B, 11, T_pre_istft]
+return stft.inverse(spec, phase)          # [B, T_audio]   T_audio = T_pre_istft * hop_size = T_dec*300
 ```
 
 Items easy to miss:
