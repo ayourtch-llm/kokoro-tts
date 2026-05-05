@@ -3,23 +3,30 @@
 use candle_core::{DType, Result, Tensor};
 use candle_nn::{Module, VarBuilder};
 
-fn instance_norm1d(x: &Tensor, eps: f64) -> Result<Tensor> {
+fn instance_norm1d(x: &Tensor, weight: &Tensor, bias: &Tensor, eps: f64) -> Result<Tensor> {
     let mean = x.mean_keepdim(2)?;
     let var = x.broadcast_sub(&mean)?.sqr()?.mean_keepdim(2)?;
-    x.broadcast_sub(&mean)?.broadcast_div(
+    let normalized = x.broadcast_sub(&mean)?.broadcast_div(
         &var.broadcast_add(&Tensor::new(eps as f32, x.device())?)?
             .sqrt()?,
-    )
+    )?;
+    normalized
+        .broadcast_mul(&weight.reshape((1, weight.dim(0)?, 1))?)?
+        .broadcast_add(&bias.reshape((1, bias.dim(0)?, 1))?)
 }
 
 /// AdaIN 1d for decoder
 pub struct AdaIN1d {
+    norm_weight: Tensor,
+    norm_bias: Tensor,
     fc: candle_nn::Linear,
 }
 
 impl AdaIN1d {
     pub fn load(style_dim: usize, num_features: usize, vb: VarBuilder) -> Result<Self> {
         Ok(Self {
+            norm_weight: vb.get(num_features, "norm.weight")?,
+            norm_bias: vb.get(num_features, "norm.bias")?,
             fc: candle_nn::linear(style_dim, num_features * 2, vb.pp("fc"))?,
         })
     }
@@ -30,7 +37,7 @@ impl AdaIN1d {
         let chunks = h.chunk(2, 1)?;
         let gamma = &chunks[0];
         let beta = &chunks[1];
-        let x = instance_norm1d(x, 1e-5)?;
+        let x = instance_norm1d(x, &self.norm_weight, &self.norm_bias, 1e-5)?;
         (((gamma + &Tensor::ones(gamma.shape(), DType::F32, x.device())?)?) * &x)? + beta
     }
 }
