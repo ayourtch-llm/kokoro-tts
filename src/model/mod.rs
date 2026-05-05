@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-mod bert;
+pub mod bert;
 mod config;
 mod decoder;
 mod predictor;

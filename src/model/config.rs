@@ -60,7 +60,7 @@ impl Config {
             hidden_dropout_prob: self.plbert.dropout,
             attention_probs_dropout_prob: self.plbert.dropout,
             max_position_embeddings: self.plbert.max_position_embeddings,
-            type_vocab_size: 1,
+            type_vocab_size: 2,
             initializer_range: 0.02f64,
             layer_norm_eps: 1e-12f64,
         }
