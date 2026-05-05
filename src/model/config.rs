@@ -1,32 +1,9 @@
 #![allow(dead_code)]
 
+use super::bert::{AlbertConfig, HiddenAct};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
-
-#[derive(Debug, Clone)]
-pub enum Activation {
-    Gelu,
-}
-
-#[derive(Debug, Clone)]
-pub struct AlbertConfig {
-    pub vocab_size: usize,
-    pub hidden_size: usize,
-    pub num_hidden_layers: usize,
-    pub num_attention_heads: usize,
-    pub intermediate_size: usize,
-    pub hidden_act: Activation,
-    pub hidden_dropout_prob: f64,
-    pub attention_probs_dropout_prob: f64,
-    pub max_position_embeddings: usize,
-    pub type_vocab_size: usize,
-    pub initializer_range: f64,
-    pub layer_norm_eps: f64,
-    pub relative_attention: bool,
-    pub relative_attention_num_buckets: usize,
-    pub relative_attention_max_distance: usize,
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -74,20 +51,18 @@ impl Config {
     pub fn to_albert_config(&self) -> AlbertConfig {
         AlbertConfig {
             vocab_size: self.n_token,
+            embedding_size: 128,
             hidden_size: self.plbert.hidden_size,
             num_hidden_layers: self.plbert.num_hidden_layers,
             num_attention_heads: self.plbert.num_attention_heads,
             intermediate_size: self.plbert.intermediate_size,
-            hidden_act: Activation::Gelu,
+            hidden_act: HiddenAct::Gelu,
             hidden_dropout_prob: self.plbert.dropout,
             attention_probs_dropout_prob: self.plbert.dropout,
             max_position_embeddings: self.plbert.max_position_embeddings,
             type_vocab_size: 1,
             initializer_range: 0.02f64,
             layer_norm_eps: 1e-12f64,
-            relative_attention: false,
-            relative_attention_num_buckets: 0,
-            relative_attention_max_distance: 0,
         }
     }
 }

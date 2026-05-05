@@ -119,9 +119,10 @@ impl Kokoro {
         let input_len = ids_with_pad.len();
         let input_ids = Tensor::from_vec(ids_with_pad, (1, input_len), ref_s.device())?;
         let text_mask = Tensor::zeros((1, input_len), DType::U8, ref_s.device())?;
+        let attention_mask = Tensor::ones((1, input_len), DType::U8, ref_s.device())?;
 
         // BERT encoding
-        let bert_dur = self.bert.forward(&input_ids, &text_mask)?;
+        let bert_dur = self.bert.forward(&input_ids, &attention_mask)?;
         let d_en = self.bert_encoder.forward(&bert_dur)?;
         let d_en = d_en.transpose(1, 2)?; // [B, C, T]
 
