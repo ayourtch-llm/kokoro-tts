@@ -3,20 +3,76 @@
 use candle_core::{IndexOp, Module, Result, Tensor};
 use candle_nn::rnn::Direction;
 use candle_nn::{
-    conv1d, embedding, layer_norm, lstm, Conv1d, Conv1dConfig, Embedding, LSTMConfig, LayerNorm,
-    VarBuilder, LSTM, RNN,
+    conv1d, embedding, lstm, Conv1d, Conv1dConfig, Embedding, LSTMConfig, VarBuilder, LSTM, RNN,
 };
 
-/// CNN block: Conv1d -> LayerNorm -> LeakyReLU -> Dropout
+fn fold_weight_norm_conv1d(
+    in_channels: usize,
+    out_channels: usize,
+    kernel_size: usize,
+    cfg: Conv1dConfig,
+    vb: VarBuilder,
+) -> Result<Conv1d> {
+    if vb.contains_tensor("weight") {
+        return conv1d(in_channels, out_channels, kernel_size, cfg, vb);
+    }
+
+    let weight_g = vb.get((out_channels, 1, 1), "parametrizations.weight.original0")?;
+    let weight_v = vb.get(
+        (out_channels, in_channels / cfg.groups, kernel_size),
+        "parametrizations.weight.original1",
+    )?;
+    let denom = weight_v.sqr()?.sum_keepdim((1, 2))?.sqrt()?;
+    let weight = weight_v.broadcast_div(&denom)?.broadcast_mul(&weight_g)?;
+    let bias = vb.get(out_channels, "bias")?;
+    Ok(Conv1d::new(weight, Some(bias), cfg))
+}
+
+fn channel_layer_norm(x: &Tensor, gamma: &Tensor, beta: &Tensor, eps: f64) -> Result<Tensor> {
+    let channel_last = x.transpose(1, x.rank() - 1)?;
+    let mean = channel_last.mean_keepdim(channel_last.rank() - 1)?;
+    let var = channel_last
+        .broadcast_sub(&mean)?
+        .sqr()?
+        .mean_keepdim(channel_last.rank() - 1)?;
+    let normalized = channel_last.broadcast_sub(&mean)?.broadcast_div(
+        &var.broadcast_add(&Tensor::new(eps as f32, x.device())?)?
+            .sqrt()?,
+    )?;
+    let y = normalized.broadcast_mul(gamma)?.broadcast_add(beta)?;
+    y.transpose(1, y.rank() - 1)
+}
+
+struct ChannelLayerNorm {
+    gamma: Tensor,
+    beta: Tensor,
+    eps: f64,
+}
+
+impl ChannelLayerNorm {
+    fn load(channels: usize, vb: VarBuilder) -> Result<Self> {
+        Ok(Self {
+            gamma: vb.get(channels, "gamma")?,
+            beta: vb.get(channels, "beta")?,
+            eps: 1e-5,
+        })
+    }
+
+    fn forward(&self, x: &Tensor) -> Result<Tensor> {
+        channel_layer_norm(x, &self.gamma, &self.beta, self.eps)
+    }
+}
+
+/// CNN block: weight-normalized Conv1d -> channel LayerNorm -> LeakyReLU -> Dropout
 struct CnnBlock {
     conv: Conv1d,
-    norm: LayerNorm,
+    norm: ChannelLayerNorm,
     dropout_p: f64,
 }
 
 impl CnnBlock {
     fn load(channels: usize, kernel_size: usize, dropout_p: f64, vb: VarBuilder) -> Result<Self> {
-        let conv = conv1d(
+        let conv = fold_weight_norm_conv1d(
             channels,
             channels,
             kernel_size,
@@ -24,9 +80,9 @@ impl CnnBlock {
                 padding: (kernel_size - 1) / 2,
                 ..Default::default()
             },
-            vb.clone(),
+            vb.pp("0"),
         )?;
-        let norm = layer_norm(channels, 1e-5, vb.pp("layer_norm"))?;
+        let norm = ChannelLayerNorm::load(channels, vb.pp("1"))?;
         Ok(Self {
             conv,
             norm,
