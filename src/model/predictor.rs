@@ -336,6 +336,10 @@ impl ProsodyPredictor {
     ) -> Result<Tensor> {
         let d = self.text_encoder.forward(d_en, style, text_mask)?;
         let d = d.transpose(1, 2)?; // [B, T, C]
+        let s = style
+            .unsqueeze(1)?
+            .broadcast_as((d.dim(0)?, d.dim(1)?, style.dim(1)?))?;
+        let d = Tensor::cat(&[&d, &s], 2)?;
         let x = self.lstm.forward(&d)?;
         self.duration_proj.forward(&x)
     }
@@ -343,6 +347,10 @@ impl ProsodyPredictor {
     /// Forward for F0 and N prediction
     pub fn fn_train(&self, en: &Tensor, s: &Tensor) -> Result<(Tensor, Tensor)> {
         let en = en.transpose(1, 2)?;
+        let style = s
+            .unsqueeze(1)?
+            .broadcast_as((en.dim(0)?, en.dim(1)?, s.dim(1)?))?;
+        let en = Tensor::cat(&[&en, &style], 2)?;
         let x = self.shared.forward(&en)?;
 
         let mut f0 = x.transpose(1, 2)?;
