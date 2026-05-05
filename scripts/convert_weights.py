@@ -2,24 +2,15 @@
 Convert Kokoro .pth weights to safetensors for Candle.
 
 Usage:
-    pip install torch safetensors huggingface_hub
-    python convert_weights.py [--repo hexgrad/Kokoro-82M] [--output ./models]
+    pip install torch safetensors
+    python convert_weights.py [--input ./models] [--output ./models]
 """
 
 import argparse
-import json
-import os
-import sys
 from pathlib import Path
 
 import torch
 from safetensors.torch import save_file
-from huggingface_hub import hf_hub_download
-
-
-def download_file(repo_id: str, filename: str, cache_dir: str | None = None) -> str:
-    """Download a file from HuggingFace Hub."""
-    return hf_hub_download(repo_id=repo_id, filename=filename, cache_dir=cache_dir)
 
 
 def convert_pth_to_safetensors(pth_path: str, output_path: str) -> None:
@@ -56,26 +47,31 @@ def convert_voice_pt(pt_path: str, output_path: str) -> None:
 
 def main():
     parser = argparse.ArgumentParser(description="Convert Kokoro weights to safetensors")
-    parser.add_argument("--repo", default="hexgrad/Kokoro-82M", help="HuggingFace repo ID")
+    parser.add_argument("--input", default="./models", help="Directory containing local .pth/.pt files")
     parser.add_argument("--output", default="./models", help="Output directory")
-    parser.add_argument("--voices", nargs="*", default=None, help="Voice files to convert (None=all)")
+    parser.add_argument("--voices", nargs="*", default=["af_heart.pt"], help="Voice .pt files under input/voices")
     args = parser.parse_args()
 
+    input_dir = Path(args.input)
     out_dir = Path(args.output)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Download and convert main model
-    pth_path = download_file(args.repo, "kokoro-v1_0.pth")
+    # Convert main model from local file.
+    pth_path = input_dir / "kokoro-v1_0.pth"
+    if not pth_path.exists():
+        raise FileNotFoundError(f"Missing local model file: {pth_path}")
     safetensors_path = out_dir / "model.safetensors"
     if not safetensors_path.exists():
-        convert_pth_to_safetensors(pth_path, str(safetensors_path))
+        convert_pth_to_safetensors(str(pth_path), str(safetensors_path))
     else:
         print(f"Skipping {safetensors_path} (already exists)")
 
-    # Download config.json
-    config_path = download_file(args.repo, "config.json")
+    # Copy config.json from local file if needed.
+    config_path = input_dir / "config.json"
+    if not config_path.exists():
+        raise FileNotFoundError(f"Missing local config file: {config_path}")
     config_out = out_dir / "config.json"
-    if not config_out.exists():
+    if config_path.resolve() != config_out.resolve():
         import shutil
         shutil.copy2(config_path, str(config_out))
         print(f"Copied config to {config_out}")
@@ -85,20 +81,16 @@ def main():
     # Download voice files
     voices_dir = out_dir / "voices"
     voices_dir.mkdir(exist_ok=True)
-
-    # List voice files from HF
-    from huggingface_hub import list_repo_files
-    all_files = list_repo_files(args.repo, repo_type="model")
-    voice_files = [f for f in all_files if f.startswith("voices/") and f.endswith(".pt")]
-
-    if args.voices:
-        voice_files = [f"voices/{v}" for v in args.voices if not v.startswith("voices/")]
-        voice_files += [v for v in args.voices if v.startswith("voices/")]
+    voice_files = args.voices
 
     print(f"\nConverting {len(voice_files)} voice files...")
     for vf in voice_files:
-        name = Path(vf).stem
-        pt_path = download_file(args.repo, vf)
+        pt_path = Path(vf)
+        if not pt_path.is_absolute():
+            pt_path = input_dir / ("voices" if pt_path.parent == Path(".") else "") / pt_path
+        if not pt_path.exists():
+            raise FileNotFoundError(f"Missing local voice file: {pt_path}")
+        name = pt_path.stem
         sf_path = voices_dir / f"{name}.safetensors"
         if not sf_path.exists():
             convert_voice_pt(pt_path, str(sf_path))
