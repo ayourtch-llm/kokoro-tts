@@ -3,6 +3,10 @@ name = "kokoro-tts"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+default = []
+espeak = []
+
 [dependencies]
 axum = { version = "0.7", features = ["json"] }
 tokio = { version = "1", features = ["full"] }

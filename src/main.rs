@@ -13,6 +13,7 @@ use tokio::sync::{mpsc, Mutex, RwLock};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 mod model;
+mod phonemizer;
 use model::Kokoro;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -130,7 +131,7 @@ async fn process_queue(state: AppState, rx: &mut mpsc::Receiver<QueueItem>) -> a
         // Generate audio with kokoro model
         if let Some(ref _model) = *state.model {
             // TODO: Full inference pipeline
-            // 1. Convert text to phonemes (using misaki G2P library)
+            // 1. Convert text to phonemes
             // 2. Load reference voice tensor
             // 3. Run model.forward(phonemes, ref_s, speed)
             // 4. Save WAV output

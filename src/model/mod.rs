@@ -82,7 +82,16 @@ impl Kokoro {
     pub fn phonemes_to_ids(&self, phonemes: &str) -> Vec<i64> {
         phonemes
             .chars()
-            .filter_map(|p| self.vocab.get(&p.to_string()).copied().map(|v| v as i64))
+            .filter_map(|p| {
+                let key = p.to_string();
+                match self.vocab.get(&key) {
+                    Some(id) => Some(*id as i64),
+                    None => {
+                        tracing::warn!(phoneme = %p, "dropping unmapped phoneme");
+                        None
+                    }
+                }
+            })
             .collect()
     }
 
