@@ -129,9 +129,10 @@ impl DurationEncoder {
             let lstm = BiLstm::load(
                 d_model + style_dim,
                 d_model / 2,
-                vb.pp(format!("lstms.{i}.0")),
+                vb.pp(format!("lstms.{}", i * 2)),
             )?;
-            let norm = AdaLayerNorm::load(style_dim, d_model, vb.pp(format!("lstms.{i}.1")))?;
+            let norm =
+                AdaLayerNorm::load(style_dim, d_model, vb.pp(format!("lstms.{}", i * 2 + 1)))?;
             lstms.push((lstm, norm));
         }
         Ok(Self { lstms, dropout })
@@ -139,16 +140,15 @@ impl DurationEncoder {
 
     pub fn forward(&self, x: &Tensor, style: &Tensor, text_mask: &Tensor) -> Result<Tensor> {
         let mut x = x.transpose(1, 2)?; // [B, T, C]
-        let (batch, seq_len, _) = x.dims3()?;
         let s = style
             .unsqueeze(1)?
-            .broadcast_as((batch, seq_len, style.dim(1)?))?;
-        x = Tensor::cat(&[&x, &s], 2)?;
-        let zeros = x.zeros_like()?;
-        let mask = text_mask.unsqueeze(2)?.broadcast_as(x.shape())?;
-        x = mask.where_cond(&zeros, &x)?;
+            .broadcast_as((x.dim(0)?, x.dim(1)?, style.dim(1)?))?;
 
         for (lstm, norm) in &self.lstms {
+            x = Tensor::cat(&[&x, &s], 2)?;
+            let zeros = x.zeros_like()?;
+            let mask = text_mask.unsqueeze(2)?.broadcast_as(x.shape())?;
+            x = mask.where_cond(&zeros, &x)?;
             x = lstm.forward(&x)?;
             let _ = self.dropout;
             x = norm.forward(&x, style)?;
@@ -282,7 +282,7 @@ impl ProsodyPredictor {
     ) -> Result<Self> {
         let text_encoder =
             DurationEncoder::load(style_dim, d_hid, nlayers, dropout, vb.pp("text_encoder"))?;
-        let lstm = BiLstm::load(d_hid, d_hid / 2, vb.pp("lstm"))?;
+        let lstm = BiLstm::load(d_hid + style_dim, d_hid / 2, vb.pp("lstm"))?;
         let duration_proj = LinearNorm::load(d_hid, max_dur, vb.pp("duration_proj"))?;
         let shared = BiLstm::load(d_hid + style_dim, d_hid / 2, vb.pp("shared"))?;
 
