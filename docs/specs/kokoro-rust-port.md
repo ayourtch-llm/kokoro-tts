@@ -285,10 +285,10 @@ Fill this in as you go. Same format as `~/rust/nemotron-speech/state.md`. Number
 
 | Stage | Max abs | Mean abs | Notes |
 |-------|---------|----------|-------|
-| 1. Voice tensor load | — | — | |
-| 2. phonemes_to_ids | — | — | |
-| 3. CustomAlbert (PL-BERT) | — | — | |
-| 4. bert_encoder Linear | — | — | |
+| 1. Voice tensor load | 0.000e0 | 0.000e0 | exact match, shape `[1, 256]`, phoneme_count=11 |
+| 2. phonemes_to_ids | exact | exact | ids `[50, 83, 54, 156, 57, 135, 16, 65, 156, 87, 123, 54, 46]` |
+| 3. CustomAlbert (PL-BERT) | 7.361e-6 | 1.355e-6 | release checker, shape `[1, 15, 768]`; converted token_type embeddings are `[2, 128]` |
+| 4. bert_encoder Linear | 5.007e-6 | 2.953e-7 | isolated linear check using reference `bert_dur`, shape `[1, 15, 512]` |
 | 5. TextEncoder | — | — | |
 | 6. predict_duration logits | — | — | |
 | 6b. Integer durations | — | — | exact match required |
