@@ -105,12 +105,16 @@ The transformer block itself is canonical: pre/post LayerNorm + multi-head self-
 - `predictor.rs::predict_duration` returns the raw `[B, T, max_dur]` tensor; `mod.rs:134-137` then sigmoids and sums along dim 1. **Verified bug** against upstream `kokoro/model.py:108`: `duration = torch.sigmoid(duration).sum(axis=-1) / speed`. The sum should be over the last axis (`D::Minus1` or dim 2 in the `[B, T, max_dur]` layout) to collapse `max_dur` into per-token continuous durations of shape `[B, T]`. The current `sum(1)` collapses the T axis instead and produces nonsense. Fix.
 - `mod.rs:134-143` is also missing the integer-duration step. Upstream `model.py:109` does `pred_dur = torch.round(duration).clamp(min=1).long().squeeze()` — round to nearest, clamp minimum to 1 (so every phoneme gets at least one frame), cast to int64, squeeze the batch dim. The Rust code stops at `/speed` and bails. The integer `pred_dur` is what feeds the alignment matrix in §2.
 
-### `src/model/decoder.rs` — ~30% complete
+### `src/model/decoder.rs` — front-end correct, generator missing, weight-loading bugs
 
-- Imports look closer to correct than the other files but need a compile pass — `candle_nn::Module` import path, `InstanceNorm1d` and `instance_norm1d` confirmation against 0.8 (it does exist; verify the config struct name).
-- `decoder.rs:171-192` — `Decoder::forward` fuses asr/f0/n features through 4 residual blocks. **The iSTFTNet generator is entirely absent** — the comment at `decoder.rs:190` admits this. Without the generator there is no audio output, only intermediate features. See §5 for the missing components.
-- `decoder.rs:185` — `if block.upsample` reads a private field; pub it or expose a method.
-- `decoder.rs:148-151` — channel arithmetic `1024 + 2 + 64` assumes f0 / n / asr_res concat sizes; verify against the StyleTTS2 reference once before touching numbers.
+The encode + 4-decode-block pipeline structure matches upstream Decoder (istftnet.py:384-421). The `AdainResBlk1d` here (lines 39-153 post-compile-pass) is **structurally correct** — it has the `pool` ConvTranspose1d for upsample, the `conv1x1` learned shortcut, the `_residual` and `_shortcut` paths, and the final `* rsqrt(2)` scale. **This is the source of truth for `AdainResBlk1d`** — when fixing the broken duplicate in `predictor.rs` (review queue item #5), copy from here.
+
+- `decoder.rs::Decoder::forward` (post-compile-pass) ends with `Ok(x)` where `x` is the post-decode features. **The Generator (iSTFTNet vocoder) is entirely absent** — see §5 for the full breakdown. Without it there is no audio, only conditioned features.
+- `decoder.rs::asr_res` is loaded as `candle_nn::conv1d(512, 64, 1, ..., vb.pp("asr_res"))`, expecting key `asr_res.weight`. **Upstream (istftnet.py:402)** wraps it in `nn.Sequential(weight_norm(nn.Conv1d(512, 64, 1)))` — state-dict keys are `asr_res.0.weight` (Sequential indexing) and Conv1d is weight-normed (so `asr_res.0.parametrizations.weight.original0/1` unless folded). Two layers of mismatch.
+- `decoder.rs::f0_conv`, `decoder.rs::n_conv` are plain Conv1d in codex's code; **upstream (istftnet.py:400-401)** wraps both in `weight_norm`. Same parametrization key mismatch unless folded.
+- All Conv1d in `AdainResBlk1d` (`conv1`, `conv2`, `conv1x1`) and the `pool` ConvTranspose1d are weight-normed upstream (istftnet.py:355,356,360,352). Same folding decision applies pervasively.
+- `decoder.rs::AdaIN1d` (lines 16-36) is the same broken pattern as in `predictor.rs` — local `instance_norm1d` helper has no learnable affine params, but upstream `nn.InstanceNorm1d(num_features, affine=True)` (istftnet.py:24, with explicit "we kept affine=True for ONNX compatibility" comment) means converted state-dict has `*.norm.weight` and `*.norm.bias` keys this code silently skips. Same as review queue item #6 — fix in both files at once.
+- `decoder.rs::Decoder::load` channel arithmetic `1024 + 2 + 64` matches upstream (istftnet.py:396-399). No fix needed there.
 
 ### `src/model/mod.rs` — bails after duration
 
@@ -122,18 +126,92 @@ The transformer block itself is canonical: pre/post LayerNorm + multi-head self-
 
 ## 5. The iSTFTNet generator — what's missing in the decoder
 
-This is the heaviest single piece. It's a vocoder: takes the asr+f0+n+style conditioning produced by the existing decoder front-end and outputs a waveform.
+The heaviest single piece. The decoder front-end (asr + f0 + n + style fusion through 4 AdainResBlk1d) produces conditioned features; the **Generator** (`istftnet.py:257-326`) turns those into a waveform via an NSF source + multi-stage upsampling + iSTFT. Currently entirely absent in `decoder.rs`.
 
-Components required, roughly in flow order:
+Read `kokoro/istftnet.py` (421 lines) end-to-end before writing. The key insights from that read are below — they're load-bearing and several are not obvious from "iSTFTNet" alone.
 
-1. **NSF (Neural Source Filter) harmonic source.** Given F0 contour and noise, generate a set of sine harmonics + noise excitation as the time-domain "source" signal. Kokoro/StyleTTS2 reuses the iSTFTNet variant from MB-iSTFT-VITS / RingFormer; expect a `SourceModuleHnNSF` or `SineGen` analog. Output channels feed into the decoder upsample stack.
-2. **Multi-scale upsampler** (`ups` ModuleList in the reference). Sequence of `ConvTranspose1d` blocks with `upsample_rates` from config (likely `[10, 6]` or similar — read it). Each upsample stage is followed by a stack of `ResBlock` (with `resblock_kernel_sizes` × `resblock_dilation_sizes` from config) — multi-receptive-field fusion (MRF).
-3. **Source downsampler / fuser** (`noise_convs` in the reference). The harmonic source from (1) is downsampled to match each upsample stage's temporal resolution and added in.
-4. **Weight normalization on every Conv1d / ConvTranspose1d.** Reference uses `torch.nn.utils.weight_norm`. Candle has no built-in `weight_norm`; either (a) fold `weight_g * (weight_v / ||weight_v||)` at load time so inference uses plain Conv1d (preferred — matches the convention candle uses for batchnorm folding), or (b) implement a thin wrapper. **Critical**: `convert_weights.py` currently flattens `weight_g` and `weight_v` as separate tensors. You either need to fold during conversion (modify the script) or fold at model-load time in Rust. Pick one and document.
-5. **Final iSTFT.** Last layer of the network produces a complex spectrogram (`gen_istft_n_fft / 2 + 1` magnitude + phase channels split). Inverse STFT with `gen_istft_hop_size` and `gen_istft_n_fft` from config gives the waveform. Candle does not ship an iSTFT — write it. Reference impl: overlap-add with synthesis window (Hann), normalized by the squared-window OLA correction. Test against `torch.istft` to ≤1e-4 abs.
-6. **Output activation.** Typically `tanh` then a fixed gain.
+### 5.1. Two distinct AdaIN block classes — don't conflate
 
-Read the upstream reference (`hexgrad/kokoro` repo, `kokoro/istftnet.py` is the file) before writing — the structure has variations from canonical iSTFTNet.
+Upstream defines **two different** AdaIN-conditioned residual blocks. They have different signatures, different forward semantics, and different parameter layouts. Names differ by one letter.
+
+- **`AdainResBlk1d`** (istftnet.py:340-381) — the one used by `Decoder.encode`/`decode` and by `ProsodyPredictor.F0`/`N`. 2 convs (conv1, conv2), 2 AdaIN1d (norm1, norm2), optional `pool` ConvTranspose1d for upsample, optional `conv1x1` for dim mismatch, leaky_relu activation, final `* rsqrt(2)` scale on the residual+shortcut sum. Codex's `decoder.rs` has this correctly; `predictor.rs` has a broken duplicate (review queue item #5).
+- **`AdaINResBlock1`** (istftnet.py:34-77) — the one used by `Generator.resblocks` and `Generator.noise_res`. Three parallel dilated paths: `convs1` (3 dilated Conv1d, dilations from `resblock_dilation_sizes[i]`) + `convs2` (3 plain Conv1d) + 6 AdaIN1d (3 adain1, 3 adain2) + 6 learnable per-channel `alpha` parameters (alpha1, alpha2). Activation is **Snake1D**, not leaky_relu (see §5.2). Each of the 3 sub-blocks does `xt = norm(x) → snake(xt) → conv1 → norm → snake → conv2`, then `x = xt + x` (residual at *every* sub-block, not at the end). Returns `x` after all 3 sub-blocks accumulate. **This block does not exist in any form in codex's port.**
+
+State-dict keys for `AdaINResBlock1`: `convs1.{0,1,2}.*`, `convs2.{0,1,2}.*`, `adain1.{0,1,2}.*`, `adain2.{0,1,2}.*`, `alpha1.{0,1,2}` (each is a `[1, channels, 1]` parameter), `alpha2.{0,1,2}`.
+
+### 5.2. Snake1D activation — custom, learnable
+
+Used inside `AdaINResBlock1` (istftnet.py:71,74):
+```python
+xt = xt + (1 / a) * (torch.sin(a * xt) ** 2)
+```
+where `a` is a learnable `[1, channels, 1]` parameter (initialized to ones, see istftnet.py:65-66). This is the BigVGAN/Snake activation — **not** leaky_relu, not GELU, not in candle. Implement as `x + (1/alpha) * sin(alpha * x).square()`. Easy in candle, just don't substitute leaky_relu by accident — the resulting audio will be wrong in a hard-to-localize way.
+
+Numerical caveat: when `alpha` is near zero, `1/alpha` blows up. Upstream relies on alpha being trained away from zero; do not add a clamp/eps unless validation receipts force it (and document if you do).
+
+### 5.3. NSF source path (istftnet.py:108-254 + Generator forward)
+
+Flow:
+1. F0 curve from the predictor, shape `[B, T]`. Upsample to audio rate via `nn.Upsample(scale_factor=prod(upsample_rates) * gen_istft_hop_size, mode='nearest')` — for Kokoro that's typically 300× (matches one frame of duration → one 12.5ms audio chunk @ 24kHz).
+2. `SineGen` (istftnet.py:108-209): produces sine waveforms at fundamental + `harmonic_num` overtones (Kokoro: `harmonic_num=8`, so 9 channels). The phase generation involves cumulative-sum of (f0 / sample_rate) and an interpolation trick (lines 153-157) for sub-rate phase computation; **port carefully** — naive cumsum at audio rate produces accumulated float-precision drift. UV (voiced/unvoiced) mask is `(f0 > voiced_threshold)` with Kokoro's threshold = 10.
+3. `SourceModuleHnNSF` (istftnet.py:212-254): `Linear(harmonic_num+1, 1)` merges the harmonics into a single excitation, then `tanh`. Produces `[B, T_audio, 1]`.
+4. **STFT of the harmonic source** (Generator forward line 304): `har_spec, har_phase = self.stft.transform(har_source)` → `[B, freq_bins, T_stft]` magnitude and phase. These are concatenated on the channel axis: `har = cat([har_spec, har_phase], dim=1)` → `[B, 2*freq_bins, T_stft]` = `[B, gen_istft_n_fft + 2, T_stft]`.
+
+The `har` tensor is what `noise_convs[i]` consume — it is **STFT'd source features, not raw waveform** entering the upsample stack.
+
+### 5.4. Generator forward (istftnet.py:299-325)
+
+```
+for i in 0..num_upsamples:
+    x = leaky_relu(x, 0.1)
+    x_source = noise_convs[i](har)        # downsample har to current resolution
+    x_source = noise_res[i](x_source, s)  # AdaINResBlock1, conditions on style
+    x = ups[i](x)                         # ConvTranspose1d upsample (weight-normed)
+    if i == num_upsamples - 1:
+        x = reflection_pad(x)             # ReflectionPad1d((1, 0)) only on last stage
+    x = x + x_source
+    xs = sum(resblocks[i*num_kernels + j](x, s) for j in 0..num_kernels) / num_kernels
+    x = xs                                # MRF: average across kernel sizes
+x = leaky_relu(x)
+x = conv_post(x)                          # Conv1d → [B, n_fft + 2, T_audio]
+spec  = exp(x[:, :n_fft//2 + 1, :])      # magnitude — exp ensures positivity
+phase = sin(x[:, n_fft//2 + 1:, :])      # phase — sin keeps in [-1, 1]
+return stft.inverse(spec, phase)
+```
+
+Items easy to miss:
+- **Output activation is NOT tanh.** It's `exp` for the magnitude half and `sin` for the phase half. The earlier draft of this spec said "tanh + fixed gain" — that was wrong. (Magnitude via exp is so the network can output negative log-magnitudes with full dynamic range.)
+- **ReflectionPad1d((1, 0)) only on the last upsample iteration**, before adding the source. One frame of left-padding, zero of right.
+- **MRF is mean, not sum.** `xs / num_kernels` at the end (line 320). With `num_kernels = len(resblock_kernel_sizes)` (typically 3).
+- **resblocks indexing is flat**: `i*num_kernels + j` selects from a flat ModuleList of `num_upsamples * num_kernels` AdaINResBlock1 instances (state-dict keys `resblocks.{0..N-1}.*`).
+- **noise_convs structure changes per stage**: for `i < num_upsamples - 1`, `noise_convs[i]` is `Conv1d(n_fft+2, ch, kernel_size=stride_f0*2, stride=stride_f0, padding=(stride_f0+1)//2)` where `stride_f0 = prod(upsample_rates[i+1:])` (downsample to current resolution). On the last stage, `Conv1d(n_fft+2, ch, kernel_size=1)` (no downsample). `noise_res[i]` is `AdaINResBlock1(ch, 7, [1,3,5], style_dim)` for non-last stages, `AdaINResBlock1(ch, 11, [1,3,5], style_dim)` for last.
+
+### 5.5. iSTFT — pick a strategy
+
+Two upstream options, both implemented in istftnet.py:
+- **`TorchSTFT`** (istftnet.py:80-105): uses `torch.stft` / `torch.istft` with complex tensors. Closer to numerical reference but candle has no complex tensors as of 0.8 — would require either a custom complex implementation or workarounds.
+- **`CustomSTFT`** (`kokoro/custom_stft.py`, 197 lines): implements STFT/iSTFT as `Conv1d` (forward) and `ConvTranspose1d` (inverse) with precomputed real/imag kernels of shape `[freq_bins, 1, n_fft]`. No complex tensors needed. Used upstream when `disable_complex=True` (for ONNX export). **This is the candle-friendly path** — port `CustomSTFT` rather than reimplement `torch.istft`. Caveat in upstream comments (custom_stft.py:79): "approximate reconstruction with Hann + typical overlap" — it doesn't do the DC/Nyquist non-doubling correction that a textbook real iSTFT does. Validate stage 11 against `CustomSTFT`'s output (not `torch.istft`'s) so reference and Rust agree on the same approximation. If the milestone-1 acceptance test (stage 12) shows this approximation is too lossy, switch reference to `TorchSTFT` and implement complex iSTFT in Rust later — but start with CustomSTFT.
+
+Constants from Kokoro's config: `gen_istft_n_fft = 20`, `gen_istft_hop_size = 5` (verify by reading `models/config.json` after download). Window is Hann, periodic, dtype f32.
+
+### 5.6. Weight normalization — pervasive
+
+Upstream uses `torch.nn.utils.parametrizations.weight_norm` on every `Conv1d` and `ConvTranspose1d` in the entire decoder + generator (and in TextEncoder.cnn). State-dict keys for a weight-normed `Conv1d` are `parametrizations.weight.original0` (g, the magnitude scalar per output channel) and `parametrizations.weight.original1` (v, the direction tensor). Bias is unparametrized.
+
+Two strategies (pick one, document):
+- **(A) Fold during conversion.** Modify `convert_weights.py` to detect `parametrizations.weight.original0/1` keys, compute `weight = g * (v / ||v||_dim>0)` per output channel, and store as flat `weight`. Rust load uses plain `candle_nn::conv1d` etc. **Recommended.** Matches the candle convention of folding train-time gymnastics at conversion time.
+- **(B) Fold at load time.** Define a `weight_normed_conv1d` Rust helper that reads `parametrizations.weight.original0/1`, computes the weight in Rust, and constructs a `Conv1d` with the folded value. More code but conversion script stays simpler.
+
+Either way: this affects **TextEncoder.cnn convs, every Conv1d in AdainResBlk1d (conv1, conv2, conv1x1, pool), Decoder.f0_conv/n_conv/asr_res, Generator.ups, Generator.conv_post, AdaINResBlock1.convs1/convs2** — basically every conv except the AdaIN1d FC linears and the standalone ProsodyPredictor.{F0,N}_proj convs (the latter is a tiny `Conv1d(d_hid/2, 1, 1)` with no weight_norm). Validate the strategy works on one conv at stage 5 before relying on it across the model.
+
+### 5.7. Implementation order suggestion
+
+1. Port `CustomSTFT` standalone, validate forward+inverse round-trip vs upstream `CustomSTFT` (not `torch.istft`) to ≤1e-5 on a synthetic input. This is small, contained, and gates everything else.
+2. Port `SineGen` + `SourceModuleHnNSF`, validate `har_source` output against upstream on a fixed F0 contour. The cumsum precision matters — diff should be ≤1e-3 abs.
+3. Port `Snake1D` activation as a free function or a small struct holding `alpha`. Validate vs upstream on random input.
+4. Port `AdaINResBlock1` (the 3-block-with-Snake one). Validate one block in isolation with random style + features.
+5. Port `Generator.forward` end-to-end, validate against upstream Generator on saved (x, s, f0) inputs. This is the integration test for steps 1-4.
+6. Wire into `Decoder.forward`: after the existing 4-decode-block loop, call `Generator(x, s, F0_curve)` and return the waveform.
 
 ## 6. G2P strategy — pick one, justify in the PR
 
