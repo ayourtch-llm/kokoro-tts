@@ -28,7 +28,9 @@ impl Phonemizer for StubPhonemizer {
 mod arpabet;
 mod lexicon;
 mod misaki_gold;
+mod normalize;
 mod sentence;
+pub use normalize::normalize_cardinals;
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct TwoTierPhonemizer;
@@ -84,6 +86,7 @@ fn phonemize_chunk(
     gold: &misaki_gold::MisakiGoldLexicon,
     lexicon: &lexicon::Lexicon,
 ) -> String {
+    let text = normalize_cardinals(text);
     let mut out = String::new();
     for token in tokenize(text) {
         match token {
@@ -104,7 +107,7 @@ fn phonemize_chunk(
     out
 }
 
-fn tokenize(text: &str) -> Vec<Token> {
+fn tokenize(text: String) -> Vec<Token> {
     let mut tokens = Vec::new();
     let mut current = String::new();
     for ch in text.chars() {
