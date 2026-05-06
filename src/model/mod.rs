@@ -3,6 +3,7 @@
 pub mod bert;
 mod config;
 pub mod decoder;
+pub mod generator;
 pub mod predictor;
 pub mod source;
 pub mod stft;
