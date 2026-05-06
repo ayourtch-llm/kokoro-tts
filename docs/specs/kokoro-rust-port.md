@@ -369,9 +369,9 @@ Fill this in as you go. Same format as `~/rust/nemotron-speech/state.md`. Number
 | 6. predict_duration logits | 1.144e-5 | 2.248e-6 | release checker, shape `[1, 15, 50]`; uses upstream-verified predictor style half `ref_s[:, 128:]` |
 | 6b. Integer durations | exact | exact | `[17, 2, 2, 2, 2, 2, 2, 2, 1, 2, 2, 4, 3, 12, 8]` |
 | 7. Alignment matrix | exact | exact | shape `[15, 63]`, zero mismatches |
-| 8. F0 prediction | — | — | |
-| 8b. N prediction | — | — | |
-| 9. Decoder fusion | — | — | |
+| 8. F0 prediction | 1.793e-4 | 1.602e-5 | release checker, shape `[1, 126]`; F0/N branch upsamples by 2 |
+| 8b. N prediction | 2.861e-6 | 1.061e-6 | release checker, shape `[1, 126]` |
+| 9. Decoder fusion | 5.531e-5 | 2.929e-6 | release checker, shape `[1, 512, 126]`; decoder shortcut upsample is nearest-neighbor, residual path uses ConvTranspose pool |
 | 10. Upsampler stage 0 | — | — | |
 | 10b. Upsampler stage 1 | — | — | |
 | 11. Inverse STFT (synthetic) | — | — | |

@@ -3,6 +3,81 @@
 use candle_core::{Result, Tensor};
 use candle_nn::{Module, VarBuilder};
 
+fn fold_weight_norm_conv1d(
+    in_channels: usize,
+    out_channels: usize,
+    kernel_size: usize,
+    cfg: candle_nn::Conv1dConfig,
+    bias: bool,
+    vb: VarBuilder,
+) -> Result<candle_nn::Conv1d> {
+    if vb.contains_tensor("weight") {
+        return if bias {
+            candle_nn::conv1d(in_channels, out_channels, kernel_size, cfg, vb)
+        } else {
+            candle_nn::conv1d_no_bias(in_channels, out_channels, kernel_size, cfg, vb)
+        };
+    }
+
+    let weight_g = if vb.contains_tensor("weight_g") {
+        vb.get((out_channels, 1, 1), "weight_g")?
+    } else {
+        vb.get((out_channels, 1, 1), "parametrizations.weight.original0")?
+    };
+    let weight_v = if vb.contains_tensor("weight_v") {
+        vb.get(
+            (out_channels, in_channels / cfg.groups, kernel_size),
+            "weight_v",
+        )?
+    } else {
+        vb.get(
+            (out_channels, in_channels / cfg.groups, kernel_size),
+            "parametrizations.weight.original1",
+        )?
+    };
+    let denom = weight_v.sqr()?.sum_keepdim((1, 2))?.sqrt()?;
+    let weight = weight_v.broadcast_div(&denom)?.broadcast_mul(&weight_g)?;
+    let bias = if bias {
+        Some(vb.get(out_channels, "bias")?)
+    } else {
+        None
+    };
+    Ok(candle_nn::Conv1d::new(weight, bias, cfg))
+}
+
+fn fold_weight_norm_conv_transpose1d(
+    in_channels: usize,
+    out_channels: usize,
+    kernel_size: usize,
+    cfg: candle_nn::ConvTranspose1dConfig,
+    vb: VarBuilder,
+) -> Result<candle_nn::ConvTranspose1d> {
+    if vb.contains_tensor("weight") {
+        return candle_nn::conv_transpose1d(in_channels, out_channels, kernel_size, cfg, vb);
+    }
+
+    let weight_g = if vb.contains_tensor("weight_g") {
+        vb.get((in_channels, 1, 1), "weight_g")?
+    } else {
+        vb.get((in_channels, 1, 1), "parametrizations.weight.original0")?
+    };
+    let weight_v = if vb.contains_tensor("weight_v") {
+        vb.get(
+            (in_channels, out_channels / cfg.groups, kernel_size),
+            "weight_v",
+        )?
+    } else {
+        vb.get(
+            (in_channels, out_channels / cfg.groups, kernel_size),
+            "parametrizations.weight.original1",
+        )?
+    };
+    let denom = weight_v.sqr()?.sum_keepdim((1, 2))?.sqrt()?;
+    let weight = weight_v.broadcast_div(&denom)?.broadcast_mul(&weight_g)?;
+    let bias = vb.get(out_channels, "bias")?;
+    Ok(candle_nn::ConvTranspose1d::new(weight, Some(bias), cfg))
+}
+
 fn instance_norm1d(x: &Tensor, eps: f64) -> Result<Tensor> {
     let mean = x.mean_keepdim(2)?;
     let var = x.broadcast_sub(&mean)?.sqr()?.mean_keepdim(2)?;
@@ -57,7 +132,7 @@ impl AdainResBlk1d {
         vb: VarBuilder,
     ) -> Result<Self> {
         let _ = dropout_p;
-        let conv1 = candle_nn::conv1d(
+        let conv1 = fold_weight_norm_conv1d(
             dim_in,
             dim_out,
             3,
@@ -65,9 +140,10 @@ impl AdainResBlk1d {
                 padding: 1,
                 ..Default::default()
             },
+            true,
             vb.pp("conv1"),
         )?;
-        let conv2 = candle_nn::conv1d(
+        let conv2 = fold_weight_norm_conv1d(
             dim_out,
             dim_out,
             3,
@@ -75,23 +151,25 @@ impl AdainResBlk1d {
                 padding: 1,
                 ..Default::default()
             },
+            true,
             vb.pp("conv2"),
         )?;
         let norm1 = AdaIN1d::load(style_dim, dim_in, vb.pp("norm1"))?;
         let norm2 = AdaIN1d::load(style_dim, dim_out, vb.pp("norm2"))?;
         let conv1x1 = if dim_in != dim_out {
-            Some(candle_nn::conv1d_no_bias(
+            Some(fold_weight_norm_conv1d(
                 dim_in,
                 dim_out,
                 1,
                 Default::default(),
+                false,
                 vb.pp("conv1x1"),
             )?)
         } else {
             None
         };
         let pool = if upsample {
-            Some(candle_nn::conv_transpose1d(
+            Some(fold_weight_norm_conv_transpose1d(
                 dim_in,
                 dim_in,
                 3,
@@ -126,8 +204,8 @@ impl AdainResBlk1d {
     }
 
     fn _shortcut(&self, x: &Tensor) -> Result<Tensor> {
-        let x = if let Some(ref pool) = self.pool {
-            pool.forward(x)?
+        let x = if self.upsample {
+            x.upsample_nearest1d(x.dim(2)? * 2)?
         } else {
             x.clone()
         };
@@ -201,7 +279,7 @@ impl Decoder {
             vb.pp("decode.3"),
         )?);
 
-        let f0_conv = candle_nn::conv1d(
+        let f0_conv = fold_weight_norm_conv1d(
             1,
             1,
             3,
@@ -211,9 +289,10 @@ impl Decoder {
                 groups: 1,
                 ..Default::default()
             },
-            vb.pp("f0_conv"),
+            true,
+            vb.pp("F0_conv"),
         )?;
-        let n_conv = candle_nn::conv1d(
+        let n_conv = fold_weight_norm_conv1d(
             1,
             1,
             3,
@@ -223,9 +302,11 @@ impl Decoder {
                 groups: 1,
                 ..Default::default()
             },
-            vb.pp("n_conv"),
+            true,
+            vb.pp("N_conv"),
         )?;
-        let asr_res = candle_nn::conv1d(512, 64, 1, Default::default(), vb.pp("asr_res"))?;
+        let asr_res =
+            fold_weight_norm_conv1d(512, 64, 1, Default::default(), true, vb.pp("asr_res.0"))?;
 
         Ok(Self {
             encode,
