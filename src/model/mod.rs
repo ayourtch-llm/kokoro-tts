@@ -3,7 +3,7 @@
 pub mod bert;
 mod config;
 mod decoder;
-mod predictor;
+pub mod predictor;
 pub mod text_encoder;
 
 pub use config::Config;

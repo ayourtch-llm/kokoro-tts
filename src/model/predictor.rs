@@ -155,7 +155,7 @@ pub struct AdaLayerNorm {
 impl AdaLayerNorm {
     pub fn load(style_dim: usize, channels: usize, vb: VarBuilder) -> Result<Self> {
         Ok(Self {
-            fc: candle_nn::linear(style_dim, channels * 2, vb)?,
+            fc: candle_nn::linear(style_dim, channels * 2, vb.pp("fc"))?,
             eps: 1e-5,
         })
     }
@@ -179,7 +179,7 @@ pub struct LinearNorm {
 impl LinearNorm {
     pub fn load(in_dim: usize, out_dim: usize, vb: VarBuilder) -> Result<Self> {
         Ok(Self {
-            linear: candle_nn::linear(in_dim, out_dim, vb)?,
+            linear: candle_nn::linear(in_dim, out_dim, vb.pp("linear_layer"))?,
         })
     }
 
@@ -233,6 +233,52 @@ impl DurationEncoder {
         }
 
         x.transpose(1, 2) // [B, C, T]
+    }
+}
+
+/// Duration-only subset of ProsodyPredictor used by stage validation.
+pub struct DurationPredictor {
+    text_encoder: DurationEncoder,
+    lstm: BiLstm,
+    duration_proj: LinearNorm,
+}
+
+impl DurationPredictor {
+    pub fn load(
+        style_dim: usize,
+        d_hid: usize,
+        nlayers: usize,
+        max_dur: usize,
+        dropout: f64,
+        vb: VarBuilder,
+    ) -> Result<Self> {
+        Ok(Self {
+            text_encoder: DurationEncoder::load(
+                style_dim,
+                d_hid,
+                nlayers,
+                dropout,
+                vb.pp("text_encoder"),
+            )?,
+            lstm: BiLstm::load(d_hid + style_dim, d_hid / 2, vb.pp("lstm"))?,
+            duration_proj: LinearNorm::load(d_hid, max_dur, vb.pp("duration_proj"))?,
+        })
+    }
+
+    pub fn predict_duration(
+        &self,
+        d_en: &Tensor,
+        style: &Tensor,
+        text_mask: &Tensor,
+    ) -> Result<Tensor> {
+        let d = self.text_encoder.forward(d_en, style, text_mask)?;
+        let d = d.transpose(1, 2)?;
+        let s = style
+            .unsqueeze(1)?
+            .broadcast_as((d.dim(0)?, d.dim(1)?, style.dim(1)?))?;
+        let d = Tensor::cat(&[&d, &s], 2)?;
+        let x = self.lstm.forward(&d)?;
+        self.duration_proj.forward(&x)
     }
 }
 

@@ -359,8 +359,8 @@ Fill this in as you go. Same format as `~/rust/nemotron-speech/state.md`. Number
 | 3. CustomAlbert (PL-BERT) | 7.361e-6 | 1.355e-6 | release checker, shape `[1, 15, 768]`; converted token_type embeddings are `[2, 128]` |
 | 4. bert_encoder Linear | 5.007e-6 | 2.953e-7 | isolated linear check using reference `bert_dur`, shape `[1, 15, 512]` |
 | 5. TextEncoder | 2.161e-6 | 9.375e-8 | release checker, shape `[1, 512, 15]`; validates CNN weight-norm fold + channel LayerNorm + BiLSTM |
-| 6. predict_duration logits | — | — | |
-| 6b. Integer durations | — | — | exact match required |
+| 6. predict_duration logits | 1.144e-5 | 2.248e-6 | release checker, shape `[1, 15, 50]`; uses upstream-verified predictor style half `ref_s[:, 128:]` |
+| 6b. Integer durations | exact | exact | `[17, 2, 2, 2, 2, 2, 2, 2, 1, 2, 2, 4, 3, 12, 8]` |
 | 7. Alignment matrix | — | — | exact match required |
 | 8. F0 prediction | — | — | |
 | 8b. N prediction | — | — | |
