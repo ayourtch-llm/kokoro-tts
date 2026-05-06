@@ -1,0 +1,104 @@
+//! Long-lived UDP TTS daemon for realtime voice integration.
+
+use anyhow::{Context, Result};
+use candle_core::Device;
+use kokoro_tts::audio::play_samples;
+use kokoro_tts::model::Kokoro;
+use kokoro_tts::phonemizer::TwoTierPhonemizer;
+use kokoro_tts::synthesis::synthesize_text;
+use std::net::UdpSocket;
+use std::path::PathBuf;
+
+#[derive(Debug)]
+struct Args {
+    listen: String,
+    model_dir: PathBuf,
+    voice: PathBuf,
+    speed: f64,
+    verbose: bool,
+}
+
+impl Args {
+    fn parse() -> Result<Self> {
+        let mut args = std::env::args().skip(1);
+        let mut parsed = Self {
+            listen: "127.0.0.1:9876".to_string(),
+            model_dir: PathBuf::from("models"),
+            voice: PathBuf::from("models/voices/af_heart.safetensors"),
+            speed: 1.0,
+            verbose: false,
+        };
+        while let Some(arg) = args.next() {
+            match arg.as_str() {
+                "--listen" => parsed.listen = args.next().context("--listen")?,
+                "--model-dir" => {
+                    parsed.model_dir = PathBuf::from(args.next().context("--model-dir")?)
+                }
+                "--voice" => parsed.voice = PathBuf::from(args.next().context("--voice")?),
+                "--speed" => parsed.speed = args.next().context("--speed")?.parse()?,
+                "--verbose" => parsed.verbose = true,
+                "--help" | "-h" => {
+                    println!(
+                        "usage: cargo run --release --bin speak-server -- [--listen HOST:PORT] [--model-dir DIR] [--voice PATH] [--speed F] [--verbose]"
+                    );
+                    std::process::exit(0);
+                }
+                other => anyhow::bail!("unknown argument {other}"),
+            }
+        }
+        Ok(parsed)
+    }
+}
+
+fn main() -> Result<()> {
+    tracing_subscriber::fmt::try_init().ok();
+    let args = Args::parse()?;
+    let device = Device::Cpu;
+
+    tracing::info!("loading model from {}", args.model_dir.display());
+    let model = Kokoro::load(&args.model_dir, &device)
+        .with_context(|| format!("loading Kokoro from {}", args.model_dir.display()))?;
+    let phonemizer = TwoTierPhonemizer;
+
+    let socket = UdpSocket::bind(&args.listen)
+        .with_context(|| format!("binding UDP socket on {}", args.listen))?;
+    tracing::info!("listening on {}", args.listen);
+
+    let mut buf = [0u8; 8192];
+    loop {
+        let (len, peer) = socket.recv_from(&mut buf).context("receiving datagram")?;
+        let text = std::str::from_utf8(&buf[..len])
+            .context("decoding UTF-8 datagram")?
+            .trim_end_matches(&['\r', '\n'][..])
+            .to_string();
+        if text.is_empty() {
+            tracing::info!(%peer, "skipping empty datagram");
+            continue;
+        }
+
+        tracing::info!(%peer, text = %text, "received datagram");
+        let synth_start = std::time::Instant::now();
+        let samples = synthesize_text(
+            &model,
+            &phonemizer,
+            &text,
+            &args.voice,
+            args.speed,
+            &device,
+            args.verbose,
+        )?;
+        let synth_elapsed = synth_start.elapsed();
+
+        let play_start = std::time::Instant::now();
+        play_samples(&samples, 24_000).context("playback")?;
+        let play_elapsed = play_start.elapsed();
+
+        tracing::info!(
+            %peer,
+            synth_ms = synth_elapsed.as_millis(),
+            play_ms = play_elapsed.as_millis(),
+            samples = samples.len(),
+            "processed datagram"
+        );
+    }
+}

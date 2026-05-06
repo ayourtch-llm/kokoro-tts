@@ -4,11 +4,9 @@ use anyhow::{bail, Context, Result};
 use candle_core::{DType, Device};
 use kokoro_tts::audio::play_samples;
 use kokoro_tts::model::Kokoro;
-use kokoro_tts::phonemizer::{Phonemizer, TwoTierPhonemizer, MILESTONE_TEST_PHONEMES};
+use kokoro_tts::phonemizer::{TwoTierPhonemizer, MILESTONE_TEST_PHONEMES};
+use kokoro_tts::synthesis::{samples_to_tensor, synthesize_phonemes, synthesize_text};
 use std::path::PathBuf;
-
-const SILENCE_PADDING_SAMPLES: usize = 24_000 * 80 / 1_000;
-const MAX_SENTENCE_PHONEMES: usize = 510;
 
 #[derive(Debug)]
 struct Args {
@@ -120,74 +118,32 @@ fn main() -> Result<()> {
 }
 
 fn synthesize(model: &Kokoro, args: &Args, device: &Device) -> Result<candle_core::Tensor> {
-    let phonemes_chunks = match (&args.phonemes, &args.text) {
-        (Some(p), _) => vec![p.clone()],
-        (None, Some(t)) => TwoTierPhonemizer
-            .phonemize_chunks(t)
-            .with_context(|| format!("phonemizing {:?}", t))?,
-        (None, None) => vec![MILESTONE_TEST_PHONEMES.to_string()],
+    let phonemizer = TwoTierPhonemizer;
+    let samples = match (&args.phonemes, &args.text) {
+        (Some(p), _) => synthesize_phonemes(model, p, &args.voice, args.speed, device)?,
+        (None, Some(t)) => synthesize_text(
+            model,
+            &phonemizer,
+            t,
+            &args.voice,
+            args.speed,
+            device,
+            args.verbose,
+        )?,
+        (None, None) => synthesize_phonemes(
+            model,
+            MILESTONE_TEST_PHONEMES,
+            &args.voice,
+            args.speed,
+            device,
+        )?,
     };
-
-    if phonemes_chunks.is_empty() {
-        bail!("phonemizer produced no chunks");
-    }
-
-    let mut audio_chunks = Vec::new();
-    for (idx, phonemes) in phonemes_chunks.iter().enumerate() {
-        let phoneme_count = phonemes.chars().count();
-        if phoneme_count > MAX_SENTENCE_PHONEMES {
-            bail!(
-                "sentence {} is too long at {} phonemes; insert punctuation to split it",
-                idx + 1,
-                phoneme_count
-            );
-        }
-
-        let ref_s = Kokoro::load_voice(&args.voice, phoneme_count, device)
-            .with_context(|| format!("loading voice {}", args.voice.display()))?;
-        if args.verbose {
-            println!(
-                "chunk {}/{}: phonemes={} voice_shape={:?}",
-                idx + 1,
-                phonemes_chunks.len(),
-                phoneme_count,
-                ref_s.dims()
-            );
-        }
-
-        let chunk_start = std::time::Instant::now();
-        let audio = model
-            .forward(phonemes, &ref_s, args.speed)
-            .with_context(|| format!("forward for chunk {}", idx + 1))?;
-        let samples = audio
-            .to_dtype(DType::F32)?
-            .flatten_all()?
-            .to_vec1::<f32>()?;
-        if args.verbose {
-            let elapsed = chunk_start.elapsed();
-            let chunk_duration_s = samples.len() as f64 / 24_000.0;
-            println!(
-                "chunk {}/{}: {} samples ({:.3}s) in {:.3}s ({:.2}x realtime)",
-                idx + 1,
-                phonemes_chunks.len(),
-                samples.len(),
-                chunk_duration_s,
-                elapsed.as_secs_f64(),
-                chunk_duration_s / elapsed.as_secs_f64()
-            );
-        }
-        audio_chunks.push(samples);
-    }
-
-    let all = concat_with_silence(&audio_chunks, SILENCE_PADDING_SAMPLES);
-    let n_samples = all.len();
-    candle_core::Tensor::from_vec(all, (1, n_samples), device)
-        .context("assembling chunked audio tensor")
+    samples_to_tensor(samples, device)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{concat_with_silence, SILENCE_PADDING_SAMPLES};
+    use kokoro_tts::synthesis::{concat_with_silence, SILENCE_PADDING_SAMPLES};
 
     #[test]
     fn inserts_silence_between_chunks_only() {
@@ -205,15 +161,4 @@ mod tests {
             chunks.iter().map(Vec::len).sum::<usize>() + 2 * SILENCE_PADDING_SAMPLES
         );
     }
-}
-
-fn concat_with_silence(chunks: &[Vec<f32>], silence_padding_samples: usize) -> Vec<f32> {
-    let mut out = Vec::new();
-    for (idx, chunk) in chunks.iter().enumerate() {
-        out.extend_from_slice(chunk);
-        if idx + 1 < chunks.len() {
-            out.extend(std::iter::repeat(0.0).take(silence_padding_samples));
-        }
-    }
-    out
 }
