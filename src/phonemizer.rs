@@ -45,9 +45,9 @@ pub use normalize::normalize_cardinals;
 #[allow(unused_imports)]
 pub use normalize::normalize_dates;
 #[allow(unused_imports)]
-pub use normalize::normalize_money_time;
-#[allow(unused_imports)]
 pub use normalize::normalize_math;
+#[allow(unused_imports)]
+pub use normalize::normalize_money_time;
 #[allow(unused_imports)]
 pub use normalize::normalize_units;
 
@@ -106,9 +106,9 @@ fn phonemize_chunk(
     lexicon: &lexicon::Lexicon,
 ) -> String {
     let text = normalize_cardinals(&normalize::normalize_acronyms(&normalize::normalize_units(
-        &normalize::normalize_money_time(&normalize::normalize_math(
-            &normalize::normalize_dates(&normalize::normalize_abbreviations(text)),
-        )),
+        &normalize::normalize_money_time(&normalize::normalize_math(&normalize::normalize_dates(
+            &normalize::normalize_abbreviations(text),
+        ))),
     )));
     let tokens = tokenize(text);
     let word_tokens: Vec<&str> = tokens
