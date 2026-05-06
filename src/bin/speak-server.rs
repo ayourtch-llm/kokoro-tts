@@ -6,8 +6,8 @@ use kokoro_tts::audio::StreamingAudioOutput;
 use kokoro_tts::model::Kokoro;
 use kokoro_tts::phonemizer::TwoTierPhonemizer;
 use kokoro_tts::synthesis::{
-    resolve_resource_path, send_reference_audio, soft_normalize, synthesize_text,
-    timestamped_wav_name, write_wav, SILENCE_PADDING_SAMPLES,
+    resolve_resource_path, soft_normalize, synthesize_text, timestamped_wav_name, write_wav,
+    SILENCE_PADDING_SAMPLES,
 };
 use serde::Deserialize;
 use std::fs;
@@ -83,23 +83,19 @@ fn main() -> Result<()> {
         .as_deref()
         .map(resolve_socket_addr)
         .transpose()?;
-    let reference_socket = reference_out
-        .map(|_| UdpSocket::bind("0.0.0.0:0").context("binding reference UDP socket"))
-        .transpose()?
-        .map(Arc::new);
-
     tracing::info!("loading model from {}", model_dir.display());
     let model = Arc::new(
         Kokoro::load(&model_dir, &device)
             .with_context(|| format!("loading Kokoro from {}", model_dir.display()))?,
     );
-    let audio = Arc::new(StreamingAudioOutput::open().context("opening output stream")?);
+    let audio = Arc::new(
+        StreamingAudioOutput::open_with_reference(reference_out)
+            .context("opening output stream")?,
+    );
     let shared = Arc::new(SharedState {
         model,
         voice,
         audio,
-        reference_socket,
-        reference_out,
         save_wav_dir: args.save_wav_dir.clone(),
         speed: args.speed,
         verbose: args.verbose,
@@ -140,8 +136,6 @@ struct SharedState {
     model: Arc<Kokoro>,
     voice: PathBuf,
     audio: Arc<StreamingAudioOutput>,
-    reference_socket: Option<Arc<UdpSocket>>,
-    reference_out: Option<SocketAddr>,
     save_wav_dir: Option<PathBuf>,
     speed: f64,
     verbose: bool,
@@ -153,6 +147,7 @@ struct ProcessReceipt {
     samples: usize,
     reference_packets: usize,
     reference_bytes: usize,
+    reference_duration_seconds: f64,
     queued_ms: usize,
     saved_path: Option<PathBuf>,
 }
@@ -213,9 +208,10 @@ fn run_event_loop(
                         .unwrap_or_default(),
                     "processed datagram"
                 );
-                if let Some(path) = receipt.saved_path {
+                if let Some(path) = &receipt.saved_path {
                     tracing::info!(saved = %path.display(), "saved wav");
                 }
+                log_reference_queue(&receipt);
             }
             Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
                 std::thread::sleep(Duration::from_millis(10));
@@ -249,28 +245,17 @@ fn process_phrase(shared: &SharedState, text: &str) -> Result<ProcessReceipt> {
         None
     };
 
-    shared
+    let reference_receipt = shared
         .audio
-        .enqueue_samples(&samples, 24_000)
+        .enqueue_samples_with_reference(&samples, 24_000, SILENCE_PADDING_SAMPLES)
         .context("queueing playback")?;
-    shared
-        .audio
-        .enqueue_silence(SILENCE_PADDING_SAMPLES)
-        .context("queueing inter-datagram silence")?;
-
-    let (reference_packets, reference_bytes) =
-        if let (Some(socket), Some(target)) = (&shared.reference_socket, shared.reference_out) {
-            send_reference_audio(socket, target, &samples, SILENCE_PADDING_SAMPLES)
-                .context("sending reference audio")?
-        } else {
-            (0, 0)
-        };
 
     Ok(ProcessReceipt {
         synth_ms: synth_elapsed.as_millis(),
         samples: samples.len(),
-        reference_packets,
-        reference_bytes,
+        reference_packets: reference_receipt.packets,
+        reference_bytes: reference_receipt.bytes,
+        reference_duration_seconds: reference_receipt.duration_seconds,
         queued_ms: samples.len() * 1_000 / 24_000,
         saved_path,
     })
@@ -348,14 +333,27 @@ fn handle_http_stream(stream: &mut TcpStream, shared: &SharedState) -> Result<()
         samples = receipt.samples,
         reference_packets = receipt.reference_packets,
         reference_bytes = receipt.reference_bytes,
+        reference_duration_seconds = receipt.reference_duration_seconds,
         queued_ms = receipt.queued_ms,
         "processed calibration"
     );
-    if let Some(path) = receipt.saved_path {
+    if let Some(path) = &receipt.saved_path {
         tracing::info!(saved = %path.display(), "saved wav");
     }
+    log_reference_queue(&receipt);
     write_http_response(stream, 200, "ok")?;
     Ok(())
+}
+
+fn log_reference_queue(receipt: &ProcessReceipt) {
+    if receipt.reference_packets > 0 {
+        tracing::info!(
+            reference_packets = receipt.reference_packets,
+            reference_bytes = receipt.reference_bytes,
+            duration_seconds = receipt.reference_duration_seconds,
+            "rate-limited reference queued at 50 packets/s"
+        );
+    }
 }
 
 fn find_header_end(buf: &[u8]) -> Option<usize> {

@@ -2,11 +2,14 @@ use anyhow::{bail, Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleFormat, Stream};
 use std::collections::VecDeque;
+use std::net::{SocketAddr, UdpSocket};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
 const DEFAULT_DRAIN_MS: usize = 80;
 const STREAM_BACKLOG_WARN_SECONDS: f64 = 30.0;
+const REFERENCE_SAMPLE_RATE: u32 = 16_000;
+const REFERENCE_PACKET_SAMPLES: usize = 320;
 
 #[derive(Debug)]
 struct PlaybackState {
@@ -97,11 +100,32 @@ pub struct StreamingAudioOutput {
 
 struct StreamingState {
     samples: VecDeque<f32>,
+    reference: Option<ReferenceStreamState>,
     error: Option<String>,
+}
+
+pub struct ReferenceQueueReceipt {
+    pub packets: usize,
+    pub bytes: usize,
+    pub duration_seconds: f64,
+}
+
+struct ReferenceStreamState {
+    socket: UdpSocket,
+    target: SocketAddr,
+    samples: VecDeque<f32>,
+    packet: Vec<u8>,
+    packet_samples: usize,
+    output_to_reference_ratio: f64,
+    reference_credit: f64,
 }
 
 impl StreamingAudioOutput {
     pub fn open() -> Result<Self> {
+        Self::open_with_reference(None)
+    }
+
+    pub fn open_with_reference(reference_out: Option<SocketAddr>) -> Result<Self> {
         let host = cpal::default_host();
         let device = host
             .default_output_device()
@@ -110,8 +134,12 @@ impl StreamingAudioOutput {
             .default_output_config()
             .context("querying default output config")?;
         let output_sample_rate = config.sample_rate().0;
+        let reference = reference_out
+            .map(|target| ReferenceStreamState::new(target, output_sample_rate))
+            .transpose()?;
         let state = Arc::new(Mutex::new(StreamingState {
             samples: VecDeque::new(),
+            reference,
             error: None,
         }));
         let channels = config.channels() as usize;
@@ -155,6 +183,50 @@ impl StreamingAudioOutput {
         Ok(())
     }
 
+    pub fn enqueue_samples_with_reference(
+        &self,
+        samples: &[f32],
+        input_sample_rate: u32,
+        trailing_silence_samples: usize,
+    ) -> Result<ReferenceQueueReceipt> {
+        self.check_error()?;
+        let mut audio = if samples.is_empty() || input_sample_rate == self.output_sample_rate {
+            samples.to_vec()
+        } else {
+            resample_linear(samples, input_sample_rate, self.output_sample_rate)
+        };
+        let output_silence = trailing_silence_samples
+            .saturating_mul(self.output_sample_rate as usize)
+            / input_sample_rate.max(1) as usize;
+        audio.extend(std::iter::repeat(0.0).take(output_silence));
+
+        let reference = resample_linear(&audio, self.output_sample_rate, REFERENCE_SAMPLE_RATE);
+
+        let mut guard = self.state.lock().expect("streaming mutex poisoned");
+        guard.samples.extend(audio);
+        let receipt = if let Some(reference_state) = guard.reference.as_mut() {
+            let packets = reference.len().div_ceil(REFERENCE_PACKET_SAMPLES);
+            let duration_seconds = reference.len() as f64 / REFERENCE_SAMPLE_RATE as f64;
+            reference_state.samples.extend(reference);
+            ReferenceQueueReceipt {
+                packets,
+                bytes: packets * REFERENCE_PACKET_SAMPLES * 4,
+                duration_seconds,
+            }
+        } else {
+            ReferenceQueueReceipt {
+                packets: 0,
+                bytes: 0,
+                duration_seconds: 0.0,
+            }
+        };
+        let queued_seconds = guard.samples.len() as f64 / self.output_sample_rate as f64;
+        drop(guard);
+        self.warn_if_backlogged(queued_seconds);
+        self.check_error()?;
+        Ok(receipt)
+    }
+
     pub fn enqueue_silence(&self, duration_samples: usize) -> Result<()> {
         self.check_error()?;
         if duration_samples == 0 {
@@ -186,6 +258,61 @@ impl StreamingAudioOutput {
         if let Some(err) = guard.error.take() {
             return Err(anyhow::anyhow!(err));
         }
+        Ok(())
+    }
+}
+
+impl ReferenceStreamState {
+    fn new(target: SocketAddr, output_sample_rate: u32) -> Result<Self> {
+        let socket = UdpSocket::bind("0.0.0.0:0").context("binding reference UDP socket")?;
+        socket
+            .set_nonblocking(true)
+            .context("setting reference UDP socket nonblocking")?;
+        Ok(Self {
+            socket,
+            target,
+            samples: VecDeque::new(),
+            packet: vec![0; REFERENCE_PACKET_SAMPLES * 4],
+            packet_samples: 0,
+            output_to_reference_ratio: REFERENCE_SAMPLE_RATE as f64 / output_sample_rate as f64,
+            reference_credit: 0.0,
+        })
+    }
+
+    fn observe_output_frame(&mut self) -> Result<()> {
+        self.reference_credit += self.output_to_reference_ratio;
+        while self.reference_credit >= 1.0 {
+            self.reference_credit -= 1.0;
+            let Some(sample) = self.samples.pop_front() else {
+                break;
+            };
+            self.push_packet_sample(sample)?;
+        }
+        if self.samples.is_empty() && self.packet_samples > 0 {
+            self.flush_packet()?;
+        }
+        Ok(())
+    }
+
+    fn push_packet_sample(&mut self, sample: f32) -> Result<()> {
+        let offset = self.packet_samples * 4;
+        self.packet[offset..offset + 4].copy_from_slice(&sample.to_le_bytes());
+        self.packet_samples += 1;
+        if self.packet_samples == REFERENCE_PACKET_SAMPLES {
+            self.flush_packet()?;
+        }
+        Ok(())
+    }
+
+    fn flush_packet(&mut self) -> Result<()> {
+        for byte in &mut self.packet[self.packet_samples * 4..] {
+            *byte = 0;
+        }
+        self.socket
+            .send_to(&self.packet, self.target)
+            .with_context(|| format!("sending reference packet to {}", self.target))?;
+        self.packet.fill(0);
+        self.packet_samples = 0;
         Ok(())
     }
 }
@@ -416,9 +543,16 @@ fn fill_output_samples(output: &mut [f32], channels: usize, samples: &[f32], ind
 
 fn fill_stream_output_f32(output: &mut [f32], channels: usize, state: &Arc<Mutex<StreamingState>>) {
     let mut guard = state.lock().expect("streaming mutex poisoned");
-    let samples = &mut guard.samples;
     for chunk in output.chunks_mut(channels) {
-        let sample = samples.pop_front().unwrap_or(0.0);
+        let queued_sample = guard.samples.pop_front();
+        let sample = queued_sample.unwrap_or(0.0);
+        if queued_sample.is_some() {
+            if let Some(reference) = guard.reference.as_mut() {
+                if let Err(err) = reference.observe_output_frame() {
+                    guard.error = Some(err.to_string());
+                }
+            }
+        }
         for dst in chunk.iter_mut() {
             *dst = sample;
         }
@@ -427,9 +561,16 @@ fn fill_stream_output_f32(output: &mut [f32], channels: usize, state: &Arc<Mutex
 
 fn fill_stream_output_i16(output: &mut [i16], channels: usize, state: &Arc<Mutex<StreamingState>>) {
     let mut guard = state.lock().expect("streaming mutex poisoned");
-    let samples = &mut guard.samples;
     for chunk in output.chunks_mut(channels) {
-        let sample = samples.pop_front().unwrap_or(0.0);
+        let queued_sample = guard.samples.pop_front();
+        let sample = queued_sample.unwrap_or(0.0);
+        if queued_sample.is_some() {
+            if let Some(reference) = guard.reference.as_mut() {
+                if let Err(err) = reference.observe_output_frame() {
+                    guard.error = Some(err.to_string());
+                }
+            }
+        }
         let pcm = float_to_i16(sample);
         for dst in chunk.iter_mut() {
             *dst = pcm;
@@ -439,9 +580,16 @@ fn fill_stream_output_i16(output: &mut [i16], channels: usize, state: &Arc<Mutex
 
 fn fill_stream_output_u16(output: &mut [u16], channels: usize, state: &Arc<Mutex<StreamingState>>) {
     let mut guard = state.lock().expect("streaming mutex poisoned");
-    let samples = &mut guard.samples;
     for chunk in output.chunks_mut(channels) {
-        let sample = samples.pop_front().unwrap_or(0.0);
+        let queued_sample = guard.samples.pop_front();
+        let sample = queued_sample.unwrap_or(0.0);
+        if queued_sample.is_some() {
+            if let Some(reference) = guard.reference.as_mut() {
+                if let Err(err) = reference.observe_output_frame() {
+                    guard.error = Some(err.to_string());
+                }
+            }
+        }
         let pcm = float_to_u16(sample);
         for dst in chunk.iter_mut() {
             *dst = pcm;
