@@ -299,6 +299,9 @@ fn run_http_listener(
     loop {
         match listener.accept() {
             Ok((mut stream, peer)) => {
+                stream
+                    .set_nonblocking(false)
+                    .context("setting accepted http stream blocking")?;
                 if let Err(err) = handle_http_stream(&mut stream, &queue, &audio, &udp_socket) {
                     tracing::warn!(
                         %http_addr,
@@ -473,9 +476,6 @@ fn handle_http_stream(
     audio: &StreamingAudioHandle,
     udp_socket: &UdpSocket,
 ) -> Result<()> {
-    stream
-        .set_nonblocking(false)
-        .context("setting accepted http stream blocking")?;
     stream.set_read_timeout(Some(Duration::from_secs(2))).ok();
     let mut buf = Vec::new();
     let mut header_end = None;
