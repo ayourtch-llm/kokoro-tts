@@ -26,6 +26,7 @@ impl Phonemizer for StubPhonemizer {
 }
 
 mod arpabet;
+mod homograph;
 mod lexicon;
 mod misaki_gold;
 mod normalize;
@@ -102,17 +103,28 @@ fn phonemize_chunk(
             &normalize::normalize_abbreviations(text),
         )),
     )));
+    let tokens = tokenize(text);
+    let word_tokens: Vec<&str> = tokens
+        .iter()
+        .filter_map(|token| match token {
+            Token::Word(word) => Some(word.as_str()),
+            Token::Punct(_) => None,
+        })
+        .collect();
+    let mut word_index = 0usize;
     let mut out = String::new();
-    for token in tokenize(text) {
+    for token in &tokens {
         match token {
             Token::Word(word) => {
                 if needs_space_before_word(&out) {
                     out.push(' ');
                 }
-                let ipa = phonemize_word(&word, gold, lexicon);
+                let ctx = homograph::WordContext::new(&word_tokens, word_index);
+                let ipa = phonemize_word(word, &ctx, gold, lexicon);
                 out.push_str(&ipa);
+                word_index += 1;
             }
-            Token::Punct(punct) => out.push(punct),
+            Token::Punct(punct) => out.push(*punct),
         }
     }
     out
@@ -120,9 +132,13 @@ fn phonemize_chunk(
 
 fn phonemize_word(
     word: &str,
+    ctx: &homograph::WordContext<'_>,
     gold: &misaki_gold::MisakiGoldLexicon,
     lexicon: &lexicon::Lexicon,
 ) -> String {
+    if let Some(ipa) = homograph::phonemize(word, ctx) {
+        return ipa;
+    }
     if let Some((base, possessive)) = split_possessive_acronym(word) {
         if normalize::is_pronounce_as_word_acronym(base) {
             let mut ipa = pronounce_or_spell_acronym(base, gold, lexicon);
@@ -292,5 +308,17 @@ mod tests {
     fn two_tier_handles_acronyms_and_possessives() {
         assert_eq!(TwoTierPhonemizer.phonemize("NASA's").unwrap(), "nˈæsəz");
         assert_eq!(TwoTierPhonemizer.phonemize("FBI's").unwrap(), "ɛf bi aɪz");
+    }
+
+    #[test]
+    fn two_tier_disambiguates_homographs() {
+        assert!(TwoTierPhonemizer
+            .phonemize("I read the book yesterday.")
+            .unwrap()
+            .contains("ɹɛd"));
+        assert!(TwoTierPhonemizer
+            .phonemize("She will lead the meeting.")
+            .unwrap()
+            .contains("lˈid"));
     }
 }
