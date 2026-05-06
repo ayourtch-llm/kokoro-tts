@@ -2,6 +2,7 @@
 
 use anyhow::{bail, Context, Result};
 use candle_core::{DType, Device};
+use kokoro_tts::audio::play_samples;
 use kokoro_tts::model::Kokoro;
 use kokoro_tts::phonemizer::{Phonemizer, TwoTierPhonemizer, MILESTONE_TEST_PHONEMES};
 use std::path::PathBuf;
@@ -18,6 +19,7 @@ struct Args {
     out: PathBuf,
     speed: f64,
     verbose: bool,
+    play: bool,
 }
 
 impl Args {
@@ -31,6 +33,7 @@ impl Args {
             out: PathBuf::from("hello.wav"),
             speed: 1.0,
             verbose: false,
+            play: false,
         };
         while let Some(arg) = args.next() {
             match arg.as_str() {
@@ -43,8 +46,9 @@ impl Args {
                 "--out" => parsed.out = PathBuf::from(args.next().context("--out")?),
                 "--speed" => parsed.speed = args.next().context("--speed")?.parse()?,
                 "--verbose" => parsed.verbose = true,
+                "--play" => parsed.play = true,
                 "--help" | "-h" => {
-                    println!("usage: cargo run --release --bin speak -- [--model-dir DIR] [--voice PATH] [--text \"...\" | --phonemes \"...\"] [--out FILE] [--speed F] [--verbose]");
+                    println!("usage: cargo run --release --bin speak -- [--model-dir DIR] [--voice PATH] [--text \"...\" | --phonemes \"...\"] [--out FILE] [--speed F] [--verbose] [--play]");
                     std::process::exit(0);
                 }
                 other => bail!("unknown argument {other}"),
@@ -85,9 +89,13 @@ fn main() -> Result<()> {
 
     // Normalize-soft if peaks > 1 (some test inputs produce huge outputs)
     let scale = if max_abs > 1.0 { 1.0 / max_abs } else { 1.0 };
+    let samples: Vec<f32> = samples.iter().map(|&v| v * scale).collect();
+    if args.play {
+        play_samples(&samples, 24_000).context("playback")?;
+    }
     let pcm: Vec<i16> = samples
         .iter()
-        .map(|&v| (v * scale * i16::MAX as f32).clamp(i16::MIN as f32, i16::MAX as f32) as i16)
+        .map(|&v| (v * i16::MAX as f32).clamp(i16::MIN as f32, i16::MAX as f32) as i16)
         .collect();
     let spec = hound::WavSpec {
         channels: 1,
