@@ -55,6 +55,19 @@ GOLD_CASES = [
     "hello world",
 ]
 
+FALLBACK_CASES = [
+    "aaberg",
+    "aaker",
+    "ababa",
+    "abaco",
+    "abadi",
+    "abided",
+    "abated",
+    "abounded",
+    "abboud",
+    "adjoins",
+]
+
 
 def load_gold(path: Path) -> dict[str, str]:
     raw = json.loads(path.read_text())
@@ -186,6 +199,17 @@ def select_fallback_cases(cmudict: dict[str, list[str]], gold: dict[str, str], l
     return cases
 
 
+def dedupe(items: list[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        if item in seen:
+            continue
+        seen.add(item)
+        out.append(item)
+    return out
+
+
 def can_convert_phones(phones: list[str]) -> bool:
     return all((phone[:-1] if phone and phone[-1] in "012" else phone) in PHONE_MAP for phone in phones)
 
@@ -214,7 +238,7 @@ def main() -> None:
 
     gold = load_gold(GOLD_PATH)
     cmudict = load_cmudict(CMUDICT_PATH)
-    cases = GOLD_CASES + select_fallback_cases(cmudict, gold)
+    cases = dedupe(GOLD_CASES + FALLBACK_CASES + select_fallback_cases(cmudict, gold))
     lines = []
     for case in cases:
         ipa = resolve_case(gold, cmudict, case)

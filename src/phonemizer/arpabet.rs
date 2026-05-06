@@ -1,50 +1,39 @@
 #![allow(dead_code)]
 
 pub fn phones_to_ipa(phones: &[&str]) -> String {
-    let mut out = String::new();
-    for phone in phones {
-        if !out.is_empty() {
-            // CMUdict tokens are concatenated per word, not separated by spaces.
-        }
-        out.push_str(&phone_to_ipa(phone));
-    }
-    out
+    phones.iter().map(|phone| phone_to_ipa(phone)).collect()
 }
 
 fn phone_to_ipa(phone: &str) -> String {
     let (base, stress) = split_stress(phone);
-    let stress_mark = match stress {
-        1 => Some('ˈ'),
-        2 => Some('ˌ'),
-        _ => None,
-    };
-    let ipa = match base {
-        "AA" => long_vowel("ɑ", stress),
-        "AE" => "æ".to_string(),
-        "AH" => ah(stress),
-        "AO" => long_vowel("ɔ", stress),
-        "AW" => diphthong("aʊ", stress_mark),
-        "AY" => diphthong("aɪ", stress_mark),
+    let stress_prefix = stress_prefix(stress);
+    match base {
+        "AA" => stressed_vowel("ɑ", &stress_prefix),
+        "AE" => stressed_vowel("æ", &stress_prefix),
+        "AH" => ah(stress, &stress_prefix),
+        "AO" => stressed_vowel("ɔ", &stress_prefix),
+        "AW" => stressed_diphthong("W", &stress_prefix),
+        "AY" => stressed_diphthong("I", &stress_prefix),
         "B" => "b".to_string(),
-        "CH" => affricate("ʧ", stress_mark),
+        "CH" => "ʧ".to_string(),
         "D" => "d".to_string(),
         "DH" => "ð".to_string(),
         "EH" => "ɛ".to_string(),
-        "ER" => er(stress),
-        "EY" => diphthong("eɪ", stress_mark),
+        "ER" => er(stress, &stress_prefix),
+        "EY" => stressed_diphthong("A", &stress_prefix),
         "F" => "f".to_string(),
         "G" => "ɡ".to_string(),
         "HH" => "h".to_string(),
         "IH" => "ɪ".to_string(),
-        "IY" => long_vowel("i", stress),
-        "JH" => affricate("ʤ", stress_mark),
+        "IY" => stressed_vowel("i", &stress_prefix),
+        "JH" => "ʤ".to_string(),
         "K" => "k".to_string(),
         "L" => "l".to_string(),
         "M" => "m".to_string(),
         "N" => "n".to_string(),
         "NG" => "ŋ".to_string(),
-        "OW" => diphthong("oʊ", stress_mark),
-        "OY" => diphthong("ɔɪ", stress_mark),
+        "OW" => stressed_diphthong("O", &stress_prefix),
+        "OY" => stressed_diphthong("Y", &stress_prefix),
         "P" => "p".to_string(),
         "R" => "ɹ".to_string(),
         "S" => "s".to_string(),
@@ -52,7 +41,7 @@ fn phone_to_ipa(phone: &str) -> String {
         "T" => "t".to_string(),
         "TH" => "θ".to_string(),
         "UH" => "ʊ".to_string(),
-        "UW" => long_vowel("u", stress),
+        "UW" => stressed_vowel("u", &stress_prefix),
         "V" => "v".to_string(),
         "W" => "w".to_string(),
         "Y" => "j".to_string(),
@@ -60,14 +49,6 @@ fn phone_to_ipa(phone: &str) -> String {
         "ZH" => "ʒ".to_string(),
         "SIL" => " ".to_string(),
         other => panic!("unsupported ARPAbet symbol {other}"),
-    };
-    if stress_mark.is_some() && is_vowel(base) {
-        let mut out = String::with_capacity(ipa.len() + 1);
-        out.push(stress_mark.unwrap());
-        out.push_str(&ipa);
-        out
-    } else {
-        ipa
     }
 }
 
@@ -80,40 +61,62 @@ fn split_stress(phone: &str) -> (&str, u8) {
     (phone, 0)
 }
 
-fn is_vowel(base: &str) -> bool {
-    matches!(base, "AA" | "AE" | "AH" | "AO" | "AW" | "AY" | "EH" | "ER" | "EY" | "IH" | "IY" | "OW" | "OY" | "UH" | "UW")
-}
-
-fn long_vowel(base: &str, stress: u8) -> String {
+fn stress_prefix(stress: u8) -> &'static str {
     match stress {
-        1 | 2 => format!("{}ː", base),
-        _ => base.to_string(),
+        1 => "ˈ",
+        2 => "ˌ",
+        _ => "",
     }
 }
 
-fn ah(stress: u8) -> String {
-    match stress {
-        0 => "ə".to_string(),
-        1 => "ʌ".to_string(),
-        2 => "ʌ".to_string(),
-        _ => "ə".to_string(),
+fn stressed_vowel(base: &str, stress_prefix: &str) -> String {
+    format!("{stress_prefix}{base}")
+}
+
+fn stressed_diphthong(base: &str, stress_prefix: &str) -> String {
+    format!("{stress_prefix}{base}")
+}
+
+fn ah(stress: u8, stress_prefix: &str) -> String {
+    let base = match stress {
+        0 => "ə",
+        1 | 2 => "ʌ",
+        _ => "ə",
+    };
+    format!("{stress_prefix}{base}")
+}
+
+fn er(stress: u8, stress_prefix: &str) -> String {
+    let base = match stress {
+        0 => "əɹ",
+        1 | 2 => "ɜɹ",
+        _ => "əɹ",
+    };
+    format!("{stress_prefix}{base}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::phones_to_ipa;
+
+    #[test]
+    fn maps_misaki_style_vowels_and_diphthongs() {
+        assert_eq!(phones_to_ipa(&["AA1"]), "ˈɑ");
+        assert_eq!(phones_to_ipa(&["AO1"]), "ˈɔ");
+        assert_eq!(phones_to_ipa(&["IY1"]), "ˈi");
+        assert_eq!(phones_to_ipa(&["UW1"]), "ˈu");
+        assert_eq!(phones_to_ipa(&["AW1"]), "ˈW");
+        assert_eq!(phones_to_ipa(&["AY1"]), "ˈI");
+        assert_eq!(phones_to_ipa(&["EY1"]), "ˈA");
+        assert_eq!(phones_to_ipa(&["OW1"]), "ˈO");
+        assert_eq!(phones_to_ipa(&["OY1"]), "ˈY");
     }
-}
 
-fn er(stress: u8) -> String {
-    match stress {
-        0 => "ɚ".to_string(),
-        1 => "ɜː".to_string(),
-        2 => "ɜː".to_string(),
-        _ => "ɚ".to_string(),
+    #[test]
+    fn maps_er_and_ah_conventions() {
+        assert_eq!(phones_to_ipa(&["ER0"]), "əɹ");
+        assert_eq!(phones_to_ipa(&["ER1"]), "ˈɜɹ");
+        assert_eq!(phones_to_ipa(&["AH0"]), "ə");
+        assert_eq!(phones_to_ipa(&["AH1"]), "ˈʌ");
     }
-}
-
-fn diphthong(base: &str, stress_mark: Option<char>) -> String {
-    let _ = stress_mark;
-    base.to_string()
-}
-
-fn affricate(base: &str, stress_mark: Option<char>) -> String {
-    diphthong(base, stress_mark)
 }
