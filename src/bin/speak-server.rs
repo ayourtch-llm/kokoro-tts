@@ -6,11 +6,11 @@ use kokoro_tts::audio::StreamingAudioOutput;
 use kokoro_tts::model::Kokoro;
 use kokoro_tts::phonemizer::TwoTierPhonemizer;
 use kokoro_tts::synthesis::{
-    resolve_resource_path, soft_normalize, synthesize_text, timestamped_wav_name, write_wav,
-    SILENCE_PADDING_SAMPLES,
+    resolve_resource_path, send_reference_audio, soft_normalize, synthesize_text,
+    timestamped_wav_name, write_wav, SILENCE_PADDING_SAMPLES,
 };
 use std::fs;
-use std::net::UdpSocket;
+use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
 use std::path::PathBuf;
 
 #[derive(Debug)]
@@ -19,6 +19,7 @@ struct Args {
     model_dir: PathBuf,
     voice: PathBuf,
     save_wav_dir: Option<PathBuf>,
+    reference_out: Option<String>,
     speed: f64,
     verbose: bool,
 }
@@ -31,6 +32,7 @@ impl Args {
             model_dir: PathBuf::from("models"),
             voice: PathBuf::from("models/voices/af_heart.safetensors"),
             save_wav_dir: None,
+            reference_out: None,
             speed: 1.0,
             verbose: false,
         };
@@ -45,11 +47,14 @@ impl Args {
                     parsed.save_wav_dir =
                         Some(PathBuf::from(args.next().context("--save-wav-dir")?))
                 }
+                "--reference-out" => {
+                    parsed.reference_out = Some(args.next().context("--reference-out")?)
+                }
                 "--speed" => parsed.speed = args.next().context("--speed")?.parse()?,
                 "--verbose" => parsed.verbose = true,
                 "--help" | "-h" => {
                     println!(
-                        "usage: cargo run --release --bin speak-server -- [--listen HOST:PORT] [--model-dir DIR] [--voice PATH] [--save-wav-dir DIR] [--speed F] [--verbose]"
+                        "usage: cargo run --release --bin speak-server -- [--listen HOST:PORT] [--model-dir DIR] [--voice PATH] [--save-wav-dir DIR] [--reference-out HOST:PORT] [--speed F] [--verbose]"
                     );
                     std::process::exit(0);
                 }
@@ -66,6 +71,16 @@ fn main() -> Result<()> {
     let device = Device::Cpu;
     let model_dir = resolve_resource_path(&args.model_dir);
     let voice = resolve_resource_path(&args.voice);
+    let reference_out = args
+        .reference_out
+        .as_deref()
+        .map(resolve_socket_addr)
+        .transpose()?;
+    let reference_socket = if reference_out.is_some() {
+        Some(UdpSocket::bind("0.0.0.0:0").context("binding reference UDP socket")?)
+    } else {
+        None
+    };
 
     tracing::info!("loading model from {}", model_dir.display());
     let model = Kokoro::load(&model_dir, &device)
@@ -117,12 +132,21 @@ fn main() -> Result<()> {
         audio
             .enqueue_silence(SILENCE_PADDING_SAMPLES)
             .context("queueing inter-datagram silence")?;
+        let (reference_packets, reference_bytes) =
+            if let (Some(socket), Some(target)) = (&reference_socket, reference_out) {
+                send_reference_audio(socket, target, &samples, SILENCE_PADDING_SAMPLES)
+                    .context("sending reference audio")?
+            } else {
+                (0, 0)
+            };
 
         if let Some(path) = &save_path {
             tracing::info!(
                 %peer,
                 synth_ms = synth_elapsed.as_millis(),
                 samples = samples.len(),
+                reference_packets,
+                reference_bytes,
                 saved = %path.display(),
                 queued_ms = (samples.len() * 1_000 / 24_000),
                 "processed datagram"
@@ -133,9 +157,18 @@ fn main() -> Result<()> {
                 %peer,
                 synth_ms = synth_elapsed.as_millis(),
                 samples = samples.len(),
+                reference_packets,
+                reference_bytes,
                 queued_ms = (samples.len() * 1_000 / 24_000),
                 "processed datagram"
             );
         }
     }
+}
+
+fn resolve_socket_addr(spec: &str) -> Result<SocketAddr> {
+    spec.to_socket_addrs()
+        .with_context(|| format!("resolving {spec}"))?
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("no socket addresses for {spec}"))
 }

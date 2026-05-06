@@ -3,11 +3,14 @@ use crate::phonemizer::Phonemizer;
 use anyhow::{bail, Context, Result};
 use candle_core::{Device, Tensor};
 use std::fs;
+use std::net::{SocketAddr, UdpSocket};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const SILENCE_PADDING_SAMPLES: usize = 24_000 * 80 / 1_000;
 pub const MAX_SENTENCE_PHONEMES: usize = 510;
+pub const REFERENCE_UDP_SAMPLE_RATE: u32 = 16_000;
+pub const REFERENCE_UDP_CHUNK_SAMPLES: usize = 320;
 
 pub fn resolve_resource_path(path: &Path) -> PathBuf {
     if path.exists() {
@@ -131,6 +134,35 @@ pub fn concat_with_silence(chunks: &[Vec<f32>], silence_padding_samples: usize) 
         }
     }
     out
+}
+
+pub fn send_reference_audio(
+    socket: &UdpSocket,
+    target: SocketAddr,
+    samples_24k: &[f32],
+    silence_padding_samples: usize,
+) -> Result<(usize, usize)> {
+    if samples_24k.is_empty() {
+        return Ok((0, 0));
+    }
+    let mut audio = samples_24k.to_vec();
+    audio.extend(std::iter::repeat(0.0).take(silence_padding_samples));
+    let resampled = crate::audio::resample_linear(&audio, 24_000, REFERENCE_UDP_SAMPLE_RATE);
+    let mut packet = vec![0u8; REFERENCE_UDP_CHUNK_SAMPLES * 4];
+    let mut packets = 0usize;
+    for chunk in resampled.chunks(REFERENCE_UDP_CHUNK_SAMPLES) {
+        packet.fill(0);
+        for (idx, sample) in chunk.iter().enumerate() {
+            let le = sample.to_le_bytes();
+            let byte_idx = idx * 4;
+            packet[byte_idx..byte_idx + 4].copy_from_slice(&le);
+        }
+        socket
+            .send_to(&packet, target)
+            .with_context(|| format!("sending reference packet to {target}"))?;
+        packets += 1;
+    }
+    Ok((packets, packets * packet.len()))
 }
 
 pub fn samples_to_tensor(samples: Vec<f32>, device: &Device) -> Result<Tensor> {

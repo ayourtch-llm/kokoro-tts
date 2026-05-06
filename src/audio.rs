@@ -197,7 +197,7 @@ fn playback_duration_ms(sample_count: usize, sample_rate: u32) -> usize {
     sample_count.saturating_mul(1_000) / sample_rate as usize
 }
 
-fn resample_linear(samples: &[f32], input_rate: u32, output_rate: u32) -> Vec<f32> {
+pub fn resample_linear(samples: &[f32], input_rate: u32, output_rate: u32) -> Vec<f32> {
     if samples.is_empty() || input_rate == 0 || output_rate == 0 || input_rate == output_rate {
         return samples.to_vec();
     }
