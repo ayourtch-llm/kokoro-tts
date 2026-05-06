@@ -1,10 +1,12 @@
 use anyhow::{bail, Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleFormat, Stream};
+use std::collections::VecDeque;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
 const DEFAULT_DRAIN_MS: usize = 80;
+const STREAM_BACKLOG_WARN_SECONDS: f64 = 30.0;
 
 #[derive(Debug)]
 struct PlaybackState {
@@ -87,6 +89,107 @@ pub fn play_samples(samples: &[f32], sample_rate: u32) -> Result<()> {
     Ok(())
 }
 
+pub struct StreamingAudioOutput {
+    output_sample_rate: u32,
+    state: Arc<Mutex<StreamingState>>,
+    _stream: Stream,
+}
+
+struct StreamingState {
+    samples: VecDeque<f32>,
+    error: Option<String>,
+}
+
+impl StreamingAudioOutput {
+    pub fn open() -> Result<Self> {
+        let host = cpal::default_host();
+        let device = host
+            .default_output_device()
+            .context("no default output device available")?;
+        let config = device
+            .default_output_config()
+            .context("querying default output config")?;
+        let output_sample_rate = config.sample_rate().0;
+        let state = Arc::new(Mutex::new(StreamingState {
+            samples: VecDeque::new(),
+            error: None,
+        }));
+        let channels = config.channels() as usize;
+        let stream_config = config.config();
+        let stream = match config.sample_format() {
+            SampleFormat::F32 => {
+                build_stream_f32_stream(&device, &stream_config, channels, state.clone())?
+            }
+            SampleFormat::I16 => {
+                build_stream_i16_stream(&device, &stream_config, channels, state.clone())?
+            }
+            SampleFormat::U16 => {
+                build_stream_u16_stream(&device, &stream_config, channels, state.clone())?
+            }
+            other => bail!("unsupported output sample format: {other:?}"),
+        };
+        stream.play().context("starting output stream")?;
+        Ok(Self {
+            output_sample_rate,
+            state,
+            _stream: stream,
+        })
+    }
+
+    pub fn enqueue_samples(&self, samples: &[f32], input_sample_rate: u32) -> Result<()> {
+        self.check_error()?;
+        if samples.is_empty() {
+            return Ok(());
+        }
+        let resampled = if input_sample_rate == self.output_sample_rate {
+            samples.to_vec()
+        } else {
+            resample_linear(samples, input_sample_rate, self.output_sample_rate)
+        };
+        let mut guard = self.state.lock().expect("streaming mutex poisoned");
+        guard.samples.extend(resampled);
+        let queued_seconds = guard.samples.len() as f64 / self.output_sample_rate as f64;
+        drop(guard);
+        self.warn_if_backlogged(queued_seconds);
+        self.check_error()?;
+        Ok(())
+    }
+
+    pub fn enqueue_silence(&self, duration_samples: usize) -> Result<()> {
+        self.check_error()?;
+        if duration_samples == 0 {
+            return Ok(());
+        }
+        let mut guard = self.state.lock().expect("streaming mutex poisoned");
+        guard
+            .samples
+            .extend(std::iter::repeat(0.0).take(duration_samples));
+        let queued_seconds = guard.samples.len() as f64 / self.output_sample_rate as f64;
+        drop(guard);
+        self.warn_if_backlogged(queued_seconds);
+        self.check_error()?;
+        Ok(())
+    }
+
+    fn warn_if_backlogged(&self, queued_seconds: f64) {
+        if queued_seconds >= STREAM_BACKLOG_WARN_SECONDS {
+            tracing::warn!(
+                queued_seconds = queued_seconds,
+                backlog_limit_seconds = STREAM_BACKLOG_WARN_SECONDS,
+                "audio playback queue is backing up"
+            );
+        }
+    }
+
+    fn check_error(&self) -> Result<()> {
+        let mut guard = self.state.lock().expect("streaming mutex poisoned");
+        if let Some(err) = guard.error.take() {
+            return Err(anyhow::anyhow!(err));
+        }
+        Ok(())
+    }
+}
+
 fn playback_duration_ms(sample_count: usize, sample_rate: u32) -> usize {
     if sample_rate == 0 {
         return 0;
@@ -138,6 +241,25 @@ fn build_stream_f32(
     Ok(stream)
 }
 
+fn build_stream_f32_stream(
+    device: &cpal::Device,
+    config: &cpal::StreamConfig,
+    channels: usize,
+    state: Arc<Mutex<StreamingState>>,
+) -> Result<Stream> {
+    let err_state = state.clone();
+    let stream = device.build_output_stream(
+        config,
+        move |output: &mut [f32], _| fill_stream_output_f32(output, channels, &state),
+        move |err| {
+            let mut guard = err_state.lock().expect("streaming mutex poisoned");
+            guard.error = Some(err.to_string());
+        },
+        None,
+    )?;
+    Ok(stream)
+}
+
 fn build_stream_i16(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
@@ -160,6 +282,25 @@ fn build_stream_i16(
     Ok(stream)
 }
 
+fn build_stream_i16_stream(
+    device: &cpal::Device,
+    config: &cpal::StreamConfig,
+    channels: usize,
+    state: Arc<Mutex<StreamingState>>,
+) -> Result<Stream> {
+    let err_state = state.clone();
+    let stream = device.build_output_stream(
+        config,
+        move |output: &mut [i16], _| fill_stream_output_i16(output, channels, &state),
+        move |err| {
+            let mut guard = err_state.lock().expect("streaming mutex poisoned");
+            guard.error = Some(err.to_string());
+        },
+        None,
+    )?;
+    Ok(stream)
+}
+
 fn build_stream_u16(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
@@ -176,6 +317,25 @@ fn build_stream_u16(
             guard.error = Some(err.to_string());
             guard.finished = true;
             cvar.notify_all();
+        },
+        None,
+    )?;
+    Ok(stream)
+}
+
+fn build_stream_u16_stream(
+    device: &cpal::Device,
+    config: &cpal::StreamConfig,
+    channels: usize,
+    state: Arc<Mutex<StreamingState>>,
+) -> Result<Stream> {
+    let err_state = state.clone();
+    let stream = device.build_output_stream(
+        config,
+        move |output: &mut [u16], _| fill_stream_output_u16(output, channels, &state),
+        move |err| {
+            let mut guard = err_state.lock().expect("streaming mutex poisoned");
+            guard.error = Some(err.to_string());
         },
         None,
     )?;
@@ -250,6 +410,41 @@ fn fill_output_samples(output: &mut [f32], channels: usize, samples: &[f32], ind
         let sample = next_sample(samples, index);
         for dst in chunk.iter_mut() {
             *dst = sample;
+        }
+    }
+}
+
+fn fill_stream_output_f32(output: &mut [f32], channels: usize, state: &Arc<Mutex<StreamingState>>) {
+    let mut guard = state.lock().expect("streaming mutex poisoned");
+    let samples = &mut guard.samples;
+    for chunk in output.chunks_mut(channels) {
+        let sample = samples.pop_front().unwrap_or(0.0);
+        for dst in chunk.iter_mut() {
+            *dst = sample;
+        }
+    }
+}
+
+fn fill_stream_output_i16(output: &mut [i16], channels: usize, state: &Arc<Mutex<StreamingState>>) {
+    let mut guard = state.lock().expect("streaming mutex poisoned");
+    let samples = &mut guard.samples;
+    for chunk in output.chunks_mut(channels) {
+        let sample = samples.pop_front().unwrap_or(0.0);
+        let pcm = float_to_i16(sample);
+        for dst in chunk.iter_mut() {
+            *dst = pcm;
+        }
+    }
+}
+
+fn fill_stream_output_u16(output: &mut [u16], channels: usize, state: &Arc<Mutex<StreamingState>>) {
+    let mut guard = state.lock().expect("streaming mutex poisoned");
+    let samples = &mut guard.samples;
+    for chunk in output.chunks_mut(channels) {
+        let sample = samples.pop_front().unwrap_or(0.0);
+        let pcm = float_to_u16(sample);
+        for dst in chunk.iter_mut() {
+            *dst = pcm;
         }
     }
 }

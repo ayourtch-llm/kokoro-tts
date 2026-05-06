@@ -2,11 +2,12 @@
 
 use anyhow::{Context, Result};
 use candle_core::Device;
-use kokoro_tts::audio::play_samples;
+use kokoro_tts::audio::StreamingAudioOutput;
 use kokoro_tts::model::Kokoro;
 use kokoro_tts::phonemizer::TwoTierPhonemizer;
 use kokoro_tts::synthesis::{
     resolve_resource_path, soft_normalize, synthesize_text, timestamped_wav_name, write_wav,
+    SILENCE_PADDING_SAMPLES,
 };
 use std::fs;
 use std::net::UdpSocket;
@@ -70,6 +71,7 @@ fn main() -> Result<()> {
     let model = Kokoro::load(&model_dir, &device)
         .with_context(|| format!("loading Kokoro from {}", model_dir.display()))?;
     let phonemizer = TwoTierPhonemizer;
+    let audio = StreamingAudioOutput::open().context("opening output stream")?;
 
     let socket = UdpSocket::bind(&args.listen)
         .with_context(|| format!("binding UDP socket on {}", args.listen))?;
@@ -101,10 +103,6 @@ fn main() -> Result<()> {
         let synth_elapsed = synth_start.elapsed();
 
         let (samples, _scale) = soft_normalize(&samples);
-        let play_start = std::time::Instant::now();
-        play_samples(&samples, 24_000).context("playback")?;
-        let play_elapsed = play_start.elapsed();
-
         let save_path = if let Some(dir) = &args.save_wav_dir {
             fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
             let path = dir.join(timestamped_wav_name(std::time::SystemTime::now()));
@@ -113,14 +111,20 @@ fn main() -> Result<()> {
         } else {
             None
         };
+        audio
+            .enqueue_samples(&samples, 24_000)
+            .context("queueing playback")?;
+        audio
+            .enqueue_silence(SILENCE_PADDING_SAMPLES)
+            .context("queueing inter-datagram silence")?;
 
         if let Some(path) = &save_path {
             tracing::info!(
                 %peer,
                 synth_ms = synth_elapsed.as_millis(),
-                play_ms = play_elapsed.as_millis(),
                 samples = samples.len(),
                 saved = %path.display(),
+                queued_ms = (samples.len() * 1_000 / 24_000),
                 "processed datagram"
             );
             tracing::info!(saved = %path.display(), "saved wav");
@@ -128,8 +132,8 @@ fn main() -> Result<()> {
             tracing::info!(
                 %peer,
                 synth_ms = synth_elapsed.as_millis(),
-                play_ms = play_elapsed.as_millis(),
                 samples = samples.len(),
+                queued_ms = (samples.len() * 1_000 / 24_000),
                 "processed datagram"
             );
         }
