@@ -7,6 +7,8 @@ import argparse
 import json
 from pathlib import Path
 
+from reference_normalize import normalize_abbreviations
+
 GOLD_PATH = Path("data/misaki-us-gold.json")
 CMUDICT_PATH = Path("data/cmudict-0.7b")
 
@@ -16,7 +18,7 @@ CASES = [
     "Dr. Adams said, \"Go.\"",
     "She paused... Then spoke.",
     "First line.\n\nSecond line.",
-    "I like apples; he likes pears: fine.",
+    "The house is there; the water is there: fine.",
     "It's fine, isn't it?",
     "e.g. examples are useful. i.e. they clarify.",
     "St. Louis is here.",
@@ -30,6 +32,7 @@ ABBREVIATIONS = (
     "mr.",
     "ms.",
     "dr.",
+    "prof.",
     "st.",
     "jr.",
     "sr.",
@@ -37,6 +40,9 @@ ABBREVIATIONS = (
     "i.e.",
     "etc.",
     "vs.",
+    "cf.",
+    "a.m.",
+    "p.m.",
 )
 
 
@@ -90,7 +96,7 @@ def stress_prefix(stress: int) -> str:
 
 
 def long_vowel(base: str, stress: int) -> str:
-    return stress_prefix(stress) + base + ("ː" if stress in (1, 2) else "")
+    return stress_prefix(stress) + base
 
 
 def simple(base: str):
@@ -102,7 +108,7 @@ def ah(stress: int) -> str:
 
 
 def er(stress: int) -> str:
-    return stress_prefix(stress) + {0: "ɚ", 1: "ɜː", 2: "ɜː"}.get(stress, "ɚ")
+    return stress_prefix(stress) + {0: "əɹ", 1: "ɜɹ", 2: "ɜɹ"}.get(stress, "əɹ")
 
 
 PHONE_MAP = {
@@ -110,15 +116,15 @@ PHONE_MAP = {
     "AE": simple("æ"),
     "AH": ah,
     "AO": lambda stress: long_vowel("ɔ", stress),
-    "AW": simple("aʊ"),
-    "AY": simple("aɪ"),
+    "AW": simple("W"),
+    "AY": simple("I"),
     "B": simple("b"),
     "CH": simple("ʧ"),
     "D": simple("d"),
     "DH": simple("ð"),
     "EH": simple("ɛ"),
     "ER": er,
-    "EY": simple("eɪ"),
+    "EY": simple("A"),
     "F": simple("f"),
     "G": simple("ɡ"),
     "HH": simple("h"),
@@ -130,8 +136,8 @@ PHONE_MAP = {
     "M": simple("m"),
     "N": simple("n"),
     "NG": simple("ŋ"),
-    "OW": simple("oʊ"),
-    "OY": simple("ɔɪ"),
+    "OW": simple("O"),
+    "OY": simple("Y"),
     "P": simple("p"),
     "R": simple("ɹ"),
     "S": simple("s"),
@@ -291,6 +297,7 @@ def phonemize_chunk(text: str, gold: dict[str, str], cmudict: dict[str, list[str
 
 
 def phonemize(text: str, gold: dict[str, str], cmudict: dict[str, list[str]]) -> str:
+    text = normalize_abbreviations(text)
     parts = [phonemize_chunk(sentence, gold, cmudict) for sentence in split_sentences(text)]
     parts = [part for part in parts if part]
     return " ".join(parts)
