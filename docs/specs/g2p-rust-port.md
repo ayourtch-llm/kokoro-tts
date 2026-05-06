@@ -109,10 +109,10 @@ Table updated from the earlier draft per misaki's actual emission pattern. **No 
 | **Short vowels (stress mark only):** | | | |
 | AE | æ | IH | ɪ |
 | EH | ɛ | UH | ʊ |
-| **Diphthongs (two IPA chars; stress mark prepended to first vowel):** | | | |
-| AW | aʊ | OW | oʊ |
-| AY | aɪ | OY | ɔɪ |
-| EY | eɪ | | |
+| **Diphthongs (misaki uses SINGLE CAPITAL LETTERS, not two-char IPA):** | | | |
+| AW | W (U+0057) | OW | O (U+004F) |
+| AY | I (U+0049) | OY | Y (U+0059) |
+| EY | A (U+0041) | | |
 | **Consonants (stress-invariant; affricates as LIGATURES):** | | | |
 | B | b | N | n |
 | CH | **ʧ** (ligature, U+02A7) | NG | ŋ |
@@ -132,8 +132,13 @@ Table updated from the earlier draft per misaki's actual emission pattern. **No 
 
 - **No length marks `ː` in US English mode.** Misaki emits "speed" = `spˈid` (not `spˈiːd`), "father" = `fˈɑðəɹ`, "thought" = `θˈɔt`. The earlier draft of this spec said long vowels carry `ː` when stressed — that's the espeak `--ipa=3` convention but NOT misaki's US convention. Drop the length mark for US. (Length mark is in Kokoro's vocab so synthesis won't break either way, but matching the training distribution is safer.)
 - **Affricates as ligatures (`ʧ` U+02A7, `ʤ` U+02A4), not two-char.** Misaki emits "church" = `ʧˈɜɹʧ` and "judge" = `ʤˈʌʤ`. Both forms are in Kokoro's vocab; ligatures match what the model saw at training. The earlier draft recommended two-char — wrong; corrected.
+- **Diphthongs as single capital letters, not two-char IPA** (verified by direct read of misaki's us_gold.json, 38k+ entries): misaki uses `O` for OW (12,619 entries — "hello"=`həlˈO`, "go"=`ɡˌO`, "no"=`nˈO`), `I` for AY (11,617 — "sky"=`skˈI`, "high"=`hˈI`), `A` for EY (11,558 — "face"=`fˈAs`, "day"=`dˈA`), `W` for AW (2,051 — "how"=`hˌW`, "now"=`nˈW`), `Y` for OY (971 — "boy"=`bˈY`, "toy"=`tˈY`). All five capital letters are in Kokoro's vocab (ids 24/25/31/39/41). The earlier draft of this spec used two-char IPA (`oʊ`/`aɪ`/`eɪ`/`aʊ`/`ɔɪ`) — wrong; corrected. The model accepts both forms (milestone-1 ASR succeeded with `oʊ` for "hello"), but bit-match with misaki uses the single capitals.
 - **AH stays special** — vowel quality changes with stress (`ʌ` ↔ `ə`), not length. AH0 → ə, AH1 → ˈʌ, AH2 → ˌʌ.
-- **ER renders as a vowel + r split**, not the `ɚ`/`ɜː` ligatures. Misaki emits "father" = `fˈɑðəɹ` (ending `əɹ`, not `ɚ`) and "church" = `ʧˈɜɹʧ` (using `ɜɹ`, not `ɜː`). So ER0 → `əɹ` and ER1/ER2 → `ˈɜɹ`/`ˌɜɹ`. **Verify ER0 against more misaki samples** like "teacher", "doctor", "mother" — if misaki uses `ɚ` for some of them, the rule may be word-specific (some unstressed ERs collapse to `ɚ`, others split to `əɹ`). Codex: dump 10 misaki ER words and pick the dominant form, document edge cases.
+- **ER renders as a vowel + r split, EMPIRICALLY CONFIRMED across many samples.** Misaki:
+  - Stressed (ER1/ER2): `ɜɹ` — "world"=`wˈɜɹld`, "church"=`ʧˈɜɹʧ`, "bird"=`bˈɜɹd`, "work"=`wˈɜɹk`, "first"=`fˈɜɹst` — never `ɜː`, never `ɚ`.
+  - Unstressed (ER0): `əɹ` — "father"=`fˈɑðəɹ`, "teacher"=`tˈiʧəɹ`, "doctor"=`dˈɑktəɹ`, "mother"=`mˈʌðəɹ`, "butter"=`bˈʌɾəɹ` — never `ɚ` in any sampled word.
+  - The `ɚ` ligature is in Kokoro's vocab but misaki US doesn't appear to use it. Drop it from the fallback table.
+  - Bonus quirk: "butter" emits flap-T `ɾ` instead of `t`. Misaki's normalizer is doing American flap-T phonology; that's a stage-3-or-beyond concern, not stage 1's lexicon.
 - **Stress mark placement**: `ˈ`/`ˌ` immediately precedes the IPA vowel (or the first vowel of a diphthong), not the consonant cluster. CMUdict marks the stressed *vowel* (AA1, IY2, etc.); when emitting, prepend the stress char to the vowel's IPA.
 - **The misaki gold path bypasses this table entirely.** ARPAbet→IPA is only exercised when CMUdict is hit but misaki isn't — i.e., the long tail. So the table's correctness matters for less-common words, but the *common* case (top-13k) is bit-exact regardless of table edge cases.
 
@@ -142,7 +147,7 @@ Punctuation: pass `, . ! ? ; :` through unchanged. Drop other punctuation (excep
 **Validation:**
 - `tools/reference_phonemize_lexicon.py` — generates expected IPA from misaki directly (since it's our gold standard) plus phonemizer/espeak as a secondary reference for OOV-from-misaki words. Curated test set of ~50 common in-misaki words + ~30 misaki-OOV-but-CMUdict-hit words.
 - `src/bin/lexicon_check.rs` — runs Rust phonemizer on the test set; for misaki-hit words target is **100% bit-exact match**, for CMUdict-fallback words target is ≥95% character-level match (some minor ARPAbet-conversion divergence is acceptable since misaki itself is the gold).
-- `cargo test` smoke test: phonemize "hello world" → must match `MILESTONE_TEST_PHONEMES` exactly. The existing constant `"həlˈoʊ wˈɜɹld"` was verified end-to-end at milestone 1 and ASR-validated; if misaki's emission differs, **update `MILESTONE_TEST_PHONEMES` to match misaki and re-run the kokoro-tts speak test** before relying on the new value. (The model is robust enough to accept slight variants, but the constant is the contract.)
+- `cargo test` smoke test: phonemize "hello world" → must match `MILESTONE_TEST_PHONEMES` exactly. **The existing constant `"həlˈoʊ wˈɜɹld"` differs from misaki's actual emission — verified.** Misaki gold has "hello"=`həlˈO` (capital O, not `oʊ`) and "world"=`wˈɜɹld` (matches the constant). Combined misaki-correct value: **`"həlˈO wˈɜɹld"`**. The model is robust enough to accept both forms (milestone-1 ASR succeeded with `oʊ`), but for bit-match with misaki the constant should be updated. Stage 1 should: (a) update `MILESTONE_TEST_PHONEMES` to the misaki-correct form, (b) re-run kokoro-tts speak + ASR round-trip with the new constant to confirm "Hello world." is still transcribed, (c) commit.
 
 **Commit message:** `g2p stage 1: misaki gold + CMUdict fallback + ARPAbet→IPA`
 
