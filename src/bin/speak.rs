@@ -5,6 +5,7 @@ use candle_core::{DType, Device};
 use kokoro_tts::audio::play_samples;
 use kokoro_tts::model::Kokoro;
 use kokoro_tts::phonemizer::{TwoTierPhonemizer, MILESTONE_TEST_PHONEMES};
+use kokoro_tts::synthesis::resolve_resource_path;
 use kokoro_tts::synthesis::{
     samples_to_tensor, soft_normalize, synthesize_phonemes, synthesize_text, write_wav,
 };
@@ -62,13 +63,15 @@ fn main() -> Result<()> {
     tracing_subscriber::fmt::try_init().ok();
     let args = Args::parse()?;
     let device = Device::Cpu;
+    let model_dir = resolve_resource_path(&args.model_dir);
+    let voice = resolve_resource_path(&args.voice);
 
-    println!("loading model from {} ...", args.model_dir.display());
-    let model = Kokoro::load(&args.model_dir, &device).context("loading Kokoro")?;
+    println!("loading model from {} ...", model_dir.display());
+    let model = Kokoro::load(&model_dir, &device).context("loading Kokoro")?;
     println!("model loaded, running forward ...");
 
     let t0 = std::time::Instant::now();
-    let audio = synthesize(&model, &args, &device)?;
+    let audio = synthesize(&model, &args, &voice, &device)?;
     let dt = t0.elapsed();
 
     let samples = audio
@@ -102,15 +105,20 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn synthesize(model: &Kokoro, args: &Args, device: &Device) -> Result<candle_core::Tensor> {
+fn synthesize(
+    model: &Kokoro,
+    args: &Args,
+    voice: &PathBuf,
+    device: &Device,
+) -> Result<candle_core::Tensor> {
     let phonemizer = TwoTierPhonemizer;
     let samples = match (&args.phonemes, &args.text) {
-        (Some(p), _) => synthesize_phonemes(model, p, &args.voice, args.speed, device)?,
+        (Some(p), _) => synthesize_phonemes(model, p, voice, args.speed, device)?,
         (None, Some(t)) => synthesize_text(
             model,
             &phonemizer,
             t,
-            &args.voice,
+            voice,
             args.speed,
             device,
             args.verbose,
@@ -118,7 +126,7 @@ fn synthesize(model: &Kokoro, args: &Args, device: &Device) -> Result<candle_cor
         (None, None) => synthesize_phonemes(
             model,
             MILESTONE_TEST_PHONEMES,
-            &args.voice,
+            voice,
             args.speed,
             device,
         )?,

@@ -5,7 +5,9 @@ use candle_core::Device;
 use kokoro_tts::audio::play_samples;
 use kokoro_tts::model::Kokoro;
 use kokoro_tts::phonemizer::TwoTierPhonemizer;
-use kokoro_tts::synthesis::{soft_normalize, synthesize_text, timestamped_wav_name, write_wav};
+use kokoro_tts::synthesis::{
+    resolve_resource_path, soft_normalize, synthesize_text, timestamped_wav_name, write_wav,
+};
 use std::fs;
 use std::net::UdpSocket;
 use std::path::PathBuf;
@@ -61,10 +63,12 @@ fn main() -> Result<()> {
     tracing_subscriber::fmt::try_init().ok();
     let args = Args::parse()?;
     let device = Device::Cpu;
+    let model_dir = resolve_resource_path(&args.model_dir);
+    let voice = resolve_resource_path(&args.voice);
 
-    tracing::info!("loading model from {}", args.model_dir.display());
-    let model = Kokoro::load(&args.model_dir, &device)
-        .with_context(|| format!("loading Kokoro from {}", args.model_dir.display()))?;
+    tracing::info!("loading model from {}", model_dir.display());
+    let model = Kokoro::load(&model_dir, &device)
+        .with_context(|| format!("loading Kokoro from {}", model_dir.display()))?;
     let phonemizer = TwoTierPhonemizer;
 
     let socket = UdpSocket::bind(&args.listen)
@@ -89,7 +93,7 @@ fn main() -> Result<()> {
             &model,
             &phonemizer,
             &text,
-            &args.voice,
+            &voice,
             args.speed,
             &device,
             args.verbose,

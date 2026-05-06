@@ -3,11 +3,34 @@ use crate::phonemizer::Phonemizer;
 use anyhow::{bail, Context, Result};
 use candle_core::{Device, Tensor};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const SILENCE_PADDING_SAMPLES: usize = 24_000 * 80 / 1_000;
 pub const MAX_SENTENCE_PHONEMES: usize = 510;
+
+pub fn resolve_resource_path(path: &Path) -> PathBuf {
+    if path.exists() {
+        return path.to_path_buf();
+    }
+    if !path.is_absolute() {
+        if let Ok(current_dir) = std::env::current_dir() {
+            let candidate = current_dir.join(path);
+            if candidate.exists() {
+                return candidate;
+            }
+        }
+        if let Ok(exe) = std::env::current_exe() {
+            for ancestor in exe.ancestors().skip(1) {
+                let candidate = ancestor.join(path);
+                if candidate.exists() {
+                    return candidate;
+                }
+            }
+        }
+    }
+    path.to_path_buf()
+}
 
 pub fn synthesize_text(
     model: &Kokoro,
