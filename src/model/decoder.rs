@@ -231,18 +231,24 @@ impl AdainResBlk1d {
     }
 }
 
-/// iSTFTNet Decoder (skeleton - full implementation needs Generator + STFT)
+/// iSTFTNet Decoder — front-end fusion + Generator vocoder.
 pub struct Decoder {
     encode: AdainResBlk1d,
     decode: Vec<AdainResBlk1d>,
     f0_conv: candle_nn::Conv1d,
     n_conv: candle_nn::Conv1d,
     asr_res: candle_nn::Conv1d,
+    generator: crate::model::generator::Generator,
     style_dim: usize,
 }
 
 impl Decoder {
-    pub fn load(dim_in: usize, style_dim: usize, vb: VarBuilder) -> Result<Self> {
+    pub fn load(
+        dim_in: usize,
+        style_dim: usize,
+        istftnet: &crate::model::config::IstftnetConfig,
+        vb: VarBuilder,
+    ) -> Result<Self> {
         let encode = AdainResBlk1d::load(dim_in + 2, 1024, style_dim, false, 0.0, vb.pp("encode"))?;
 
         let mut decode = Vec::new();
@@ -308,17 +314,58 @@ impl Decoder {
         let asr_res =
             fold_weight_norm_conv1d(512, 64, 1, Default::default(), true, vb.pp("asr_res.0"))?;
 
+        let dilation_arrays: Vec<[usize; 3]> = istftnet
+            .resblock_dilation_sizes
+            .iter()
+            .map(|d| {
+                if d.len() != 3 {
+                    return Err(candle_core::Error::Msg(format!(
+                        "expected resblock dilations of length 3, got {}",
+                        d.len()
+                    )));
+                }
+                Ok([d[0], d[1], d[2]])
+            })
+            .collect::<Result<_>>()?;
+        let generator = crate::model::generator::Generator::load(
+            style_dim,
+            istftnet.upsample_initial_channel,
+            istftnet.upsample_rates.clone(),
+            istftnet.upsample_kernel_sizes.clone(),
+            istftnet.resblock_kernel_sizes.clone(),
+            dilation_arrays,
+            istftnet.gen_istft_n_fft,
+            istftnet.gen_istft_hop_size,
+            vb.pp("generator"),
+        )?;
+
         Ok(Self {
             encode,
             decode,
             f0_conv,
             n_conv,
             asr_res,
+            generator,
             style_dim,
         })
     }
 
     pub fn forward(
+        &self,
+        asr: &Tensor,
+        f0_curve: &Tensor,
+        n: &Tensor,
+        s: &Tensor,
+    ) -> Result<Tensor> {
+        let x = self.forward_pre_generator(asr, f0_curve, n, s)?;
+        // Pass the (un-strided) F0_curve to the generator — it does its own
+        // F0 upsampling internally for the NSF source path.
+        self.generator.forward(&x, s, f0_curve)
+    }
+
+    /// The pre-generator (decode-block-loop) output. Used by stage-9 validation
+    /// which compares against the upstream Python reference taken at this point.
+    pub fn forward_pre_generator(
         &self,
         asr: &Tensor,
         f0_curve: &Tensor,
@@ -342,9 +389,6 @@ impl Decoder {
                 res = false;
             }
         }
-
-        // TODO: Generator (multi-scale upsampling + iSTFT) needed here
-        // This is the most complex part - requires NSF source, multi-band STFT
         Ok(x)
     }
 }

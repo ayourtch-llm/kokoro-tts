@@ -199,10 +199,15 @@ fn main() -> Result<()> {
         VarBuilder::from_mmaped_safetensors(&[args.model.clone()], DType::F32, &device)
             .context("loading model safetensors")?
     };
-    let decoder = Decoder::load(config.hidden_dim, config.style_dim, vb.pp("decoder"))
-        .map_err(|e| anyhow::anyhow!("{e:#}"))?;
+    let decoder = Decoder::load(
+        config.hidden_dim,
+        config.style_dim,
+        &config.istftnet,
+        vb.pp("decoder"),
+    )
+    .map_err(|e| anyhow::anyhow!("{e:#}"))?;
     let out = decoder
-        .forward(&asr, &f0, &n, &style)
+        .forward_pre_generator(&asr, &f0, &n, &style)
         .map_err(|e| anyhow::anyhow!("{e:#}"))?;
     compare(&out, &ref_shape, &ref_data, args.atol)?;
     println!("OK");

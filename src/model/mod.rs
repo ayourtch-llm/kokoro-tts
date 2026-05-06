@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 pub mod bert;
-mod config;
+pub mod config;
 pub mod decoder;
 pub mod generator;
 pub mod predictor;
@@ -90,7 +90,12 @@ impl Kokoro {
             config.n_token,
             vb.pp("text_encoder"),
         )?;
-        let decoder = Decoder::load(config.hidden_dim, config.style_dim, vb.pp("decoder"))?;
+        let decoder = Decoder::load(
+            config.hidden_dim,
+            config.style_dim,
+            &config.istftnet,
+            vb.pp("decoder"),
+        )?;
 
         Ok(Self {
             bert,
@@ -121,25 +126,39 @@ impl Kokoro {
             .collect()
     }
 
-    /// Full forward pass: phonemes + reference style -> audio
+    /// Load a voice's reference style tensor for a given phoneme count.
+    /// Returns `[1, 256]` (split as `s_pred = ref_s[:, 128:]` for the predictor
+    /// and `s_dec = ref_s[:, :128]` for the decoder per upstream model.py:104,118).
+    pub fn load_voice(path: &Path, phoneme_count: usize, device: &Device) -> Result<Tensor> {
+        let tensors = candle_core::safetensors::load(path, device)?;
+        let ref_s = tensors
+            .get("ref_s")
+            .ok_or_else(|| candle_core::Error::Msg(format!("missing ref_s in {}", path.display())))?;
+        let n = ref_s.dim(0)?;
+        let idx = phoneme_count.min(n.saturating_sub(1));
+        Ok(ref_s.narrow(0, idx, 1)?.squeeze(0)?)
+    }
+
+    /// Full forward pass: phonemes + reference style -> audio waveform `[1, N_samples]` @ 24 kHz.
+    /// Mirrors upstream model.py:forward_with_tokens (model.py:87-119).
     pub fn forward(&self, phonemes: &str, ref_s: &Tensor, speed: f64) -> Result<Tensor> {
-        let input_ids = self.phonemes_to_ids(phonemes);
-        if input_ids.is_empty() {
+        let input_ids_vec = self.phonemes_to_ids(phonemes);
+        if input_ids_vec.is_empty() {
             return Err(candle_core::Error::Msg(
                 "No valid phonemes found".to_string(),
             ));
         }
-        if input_ids.len() + 2 > self.context_length {
+        if input_ids_vec.len() + 2 > self.context_length {
             return Err(candle_core::Error::Msg(format!(
                 "Input too long: {} + 2 > {}",
-                input_ids.len(),
+                input_ids_vec.len(),
                 self.context_length
             )));
         }
 
         // [0, *input_ids, 0] with BOS/EOS padding
         let mut ids_with_pad = vec![0i64];
-        ids_with_pad.extend(input_ids);
+        ids_with_pad.extend(input_ids_vec);
         ids_with_pad.push(0);
 
         let input_len = ids_with_pad.len();
@@ -147,23 +166,47 @@ impl Kokoro {
         let text_mask = Tensor::zeros((1, input_len), DType::U8, ref_s.device())?;
         let attention_mask = Tensor::ones((1, input_len), DType::U8, ref_s.device())?;
 
-        // BERT encoding
+        // BERT → bert_encoder → [B, hidden, T]
         let bert_dur = self.bert.forward(&input_ids, &attention_mask)?;
         let d_en = self.bert_encoder.forward(&bert_dur)?;
-        let d_en = d_en.transpose(1, 2)?; // [B, C, T]
+        let d_en = d_en.transpose(1, 2)?;
 
-        // Split reference style
-        let s = ref_s.narrow(1, 128, ref_s.dim(1)? - 128)?;
+        // Split reference style: s_pred for predictor, s_dec for decoder.
+        // Per upstream model.py:104,118 — verified against checkpoint.
+        let s_pred = ref_s.narrow(1, 128, ref_s.dim(1)? - 128)?;
+        let s_dec = ref_s.narrow(1, 0, 128)?;
 
-        // Duration prediction
-        let duration = self.predictor.predict_duration(&d_en, &s, &text_mask)?;
-        let duration = candle_nn::ops::sigmoid(&duration)?;
-        let duration = duration.sum(candle_core::D::Minus1)?;
-        let duration = duration / speed;
+        // Predictor text features (used twice: for duration logits and for F0/N input).
+        let d = self.predictor.text_encode(&d_en, &s_pred, &text_mask)?;
+        let duration_logits = self.predictor.duration_from_features(&d, &s_pred)?;
+        let duration = candle_nn::ops::sigmoid(&duration_logits)?
+            .sum(candle_core::D::Minus1)?;
+        let duration = (duration / speed)?;
+        let duration_vals = duration.flatten_all()?.to_vec1::<f32>()?;
+        let pred_dur: Vec<i64> = duration_vals
+            .iter()
+            .map(|&x| x.round().max(1.0) as i64)
+            .collect();
 
-        // TODO: Full alignment, F0/N prediction, text encoding, decoding
-        // This is where the complex alignment + vocoder pipeline goes
+        // Alignment matrix [1, T, sum(pred_dur)] via one-hot scatter
+        let alignment_2d = alignment_from_durations(&pred_dur)?;
+        let total_frames: usize = pred_dur.iter().sum::<i64>() as usize;
+        let alignment_flat: Vec<f32> = alignment_2d.into_iter().flatten().collect();
+        let alignment = Tensor::from_vec(
+            alignment_flat,
+            (1, input_len, total_frames),
+            ref_s.device(),
+        )?;
 
-        duration
+        // F0/N from predictor: en = d @ alignment, then fn_train re-concats style internally.
+        let en = d.matmul(&alignment)?;
+        let (f0_pred, n_pred) = self.predictor.fn_train(&en, &s_pred)?;
+
+        // Standalone text encoder (separate from predictor's text encoder).
+        let t_en = self.text_encoder.forward(&input_ids)?;
+        let asr = t_en.matmul(&alignment)?;
+
+        // Decoder front-end + Generator → waveform [1, T_audio].
+        self.decoder.forward(&asr, &f0_pred, &n_pred, &s_dec)
     }
 }
