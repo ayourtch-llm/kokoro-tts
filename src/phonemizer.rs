@@ -28,6 +28,7 @@ impl Phonemizer for StubPhonemizer {
 mod arpabet;
 mod homograph;
 mod lexicon;
+mod lts;
 mod misaki_gold;
 mod normalize;
 mod sentence;
@@ -164,7 +165,7 @@ fn phonemize_word(
     gold.lookup(&word)
         .map(str::to_owned)
         .or_else(|| lexicon.lookup(&word).map(arpabet::phones_to_ipa))
-        .unwrap_or_else(|| spell_out_word(&word))
+        .unwrap_or_else(|| lts::pronounce_oov(word))
 }
 
 fn pronounce_or_spell_acronym(
