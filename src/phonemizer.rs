@@ -40,6 +40,8 @@ pub use normalize::normalize_cardinals;
 pub use normalize::normalize_dates;
 #[allow(unused_imports)]
 pub use normalize::normalize_money_time;
+#[allow(unused_imports)]
+pub use normalize::normalize_units;
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct TwoTierPhonemizer;
@@ -95,11 +97,11 @@ fn phonemize_chunk(
     gold: &misaki_gold::MisakiGoldLexicon,
     lexicon: &lexicon::Lexicon,
 ) -> String {
-    let text = normalize_cardinals(&normalize::normalize_acronyms(
+    let text = normalize_cardinals(&normalize::normalize_acronyms(&normalize::normalize_units(
         &normalize::normalize_money_time(&normalize::normalize_dates(
             &normalize::normalize_abbreviations(text),
         )),
-    ));
+    )));
     let mut out = String::new();
     for token in tokenize(text) {
         match token {

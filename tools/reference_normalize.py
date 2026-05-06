@@ -89,6 +89,24 @@ CASES = [
     "May 6th, 2026",
     "May 5",
     "Monday, May 6th",
+    "The package weighs 5.5 kg and travels 60 km at 30 mph in cold 5°C weather.",
+    "1 kg",
+    "2 kg",
+    "0 kg",
+    "0.5 kg",
+    "1 ft",
+    "2 ft",
+    "5 s",
+    "5 sec",
+    "5 min",
+    "5 hr",
+    "5 km/h",
+    "5 km",
+    "5 g",
+    "5 mi",
+    "5mm",
+    "5 °F",
+    "3 m",
 ]
 
 UNITS = [
@@ -132,6 +150,7 @@ def normalize(text: str) -> str:
     text = normalize_abbreviations(text)
     text = normalize_dates(text)
     text = normalize_money_time(text)
+    text = normalize_units(text)
     text = normalize_acronyms(text)
     chars = list(text)
     out: list[str] = []
@@ -437,6 +456,128 @@ def normalize_money_time(text: str) -> str:
             out.append(chars[i])
             i += 1
     return "".join(out)
+
+
+def normalize_units(text: str) -> str:
+    chars = list(text)
+    out: list[str] = []
+    i = 0
+    while i < len(chars):
+        result = match_unit(chars, i)
+        if result is None:
+            out.append(chars[i])
+            i += 1
+        else:
+            replacement, consumed = result
+            out.append(replacement)
+            i += consumed
+    return "".join(out)
+
+
+def match_unit(chars: list[str], start: int) -> tuple[str, int] | None:
+    number_raw, number_len = scan_unit_number(chars, start)
+    if not number_raw:
+        return None
+    i = start + number_len
+    while i < len(chars) and chars[i].isspace():
+        i += 1
+    result = match_unit_suffix(chars, i)
+    if result is None:
+        return None
+    singular, plural, unit_len, always_plural = result
+    if not unit_ends_cleanly(chars, i + unit_len):
+        return None
+    number_words = normalize(number_raw)
+    unit_word = singular if always_plural and is_exact_one(number_raw) else plural if always_plural else singular
+    return f"{number_words} {unit_word}", i + unit_len - start
+
+
+def match_unit_suffix(chars: list[str], start: int) -> tuple[str, str, int, bool] | None:
+    lower = "".join(chars[start : start + 5]).lower()
+    if lower.startswith("km/h"):
+        return "kilometers per hour", "kilometers per hour", 4, False
+    if lower.startswith("mph"):
+        return "miles per hour", "miles per hour", 3, False
+    if lower.startswith("kph"):
+        return "kilometers per hour", "kilometers per hour", 3, False
+    if lower.startswith("°c"):
+        return "degrees Celsius", "degrees Celsius", 2, False
+    if lower.startswith("°f"):
+        return "degrees Fahrenheit", "degrees Fahrenheit", 2, False
+    if lower.startswith("°k"):
+        return "degrees Kelvin", "degrees Kelvin", 2, False
+    if lower.startswith("mm"):
+        return "millimeter", "millimeters", 2, True
+    if lower.startswith("cm"):
+        return "centimeter", "centimeters", 2, True
+    if lower.startswith("km"):
+        return "kilometer", "kilometers", 2, True
+    if lower.startswith("in"):
+        return "inch", "inches", 2, True
+    if lower.startswith("ft"):
+        return "foot", "feet", 2, True
+    if lower.startswith("yd"):
+        return "yard", "yards", 2, True
+    if lower.startswith("mg"):
+        return "milligram", "milligrams", 2, True
+    if lower.startswith("g"):
+        return "gram", "grams", 1, True
+    if lower.startswith("kg"):
+        return "kilogram", "kilograms", 2, True
+    if lower.startswith("min"):
+        return "minute", "minutes", 3, True
+    if lower.startswith("mi"):
+        return "mile", "miles", 2, True
+    if lower.startswith("lb"):
+        return "pound", "pounds", 2, True
+    if lower.startswith("oz"):
+        return "ounce", "ounces", 2, True
+    if lower.startswith("hr"):
+        return "hour", "hours", 2, True
+    if lower.startswith("sec"):
+        return "second", "seconds", 3, True
+    if lower.startswith("s"):
+        return "second", "seconds", 1, True
+    if lower.startswith("m"):
+        return "meter", "meters", 1, True
+    if lower.startswith("t"):
+        return "ton", "tons", 1, True
+    return None
+
+
+def scan_unit_number(chars: list[str], start: int) -> tuple[str, int]:
+    if start > 0 and (chars[start - 1].isalnum() or chars[start - 1] in ":/"):
+        return "", 0
+    i = start
+    out: list[str] = []
+    if i < len(chars) and chars[i] in "+-":
+        if i + 1 >= len(chars) or not chars[i + 1].isdigit():
+            return "", 0
+        if chars[i] == "-":
+            out.append("-")
+        i += 1
+    saw_digit = False
+    while i < len(chars):
+        ch = chars[i]
+        if ch.isdigit():
+            saw_digit = True
+            out.append(ch)
+            i += 1
+            continue
+        if ch in ",.":
+            out.append(ch)
+            i += 1
+            continue
+        break
+    return ("".join(out), i - start) if saw_digit else ("", 0)
+
+
+def unit_ends_cleanly(chars: list[str], end: int) -> bool:
+    return end >= len(chars) or not chars[end].isalpha()
+
+
+def is_exact_one(raw: str) -> bool:
+    return raw.lstrip("0") == "1"
 
 
 def normalize_dates(text: str) -> str:

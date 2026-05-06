@@ -87,6 +87,22 @@ pub fn normalize_money_time(text: &str) -> String {
     out
 }
 
+pub fn normalize_units(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::new();
+    let mut i = 0;
+    while i < chars.len() {
+        if let Some((replacement, consumed)) = match_unit(&chars, i) {
+            out.push_str(&replacement);
+            i += consumed;
+        } else {
+            out.push(chars[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
 fn parse_token(chars: &[char], start: usize) -> Option<(String, usize)> {
     let mut i = start;
     let mut negative = false;
@@ -560,6 +576,165 @@ fn match_cents_suffix(chars: &[char], start: usize) -> Option<(String, usize)> {
     Some((out, consumed + 1))
 }
 
+fn match_unit(chars: &[char], start: usize) -> Option<(String, usize)> {
+    let (number_raw, number_len) = scan_unit_number(chars, start)?;
+    let mut idx = start + number_len;
+    while matches!(chars.get(idx), Some(ch) if ch.is_whitespace()) {
+        idx += 1;
+    }
+    let (singular, plural, unit_len, always_plural) = match_unit_suffix(chars, idx)?;
+    if !unit_ends_cleanly(chars, idx + unit_len) {
+        return None;
+    }
+    let number_words = normalize_cardinals(&number_raw);
+    let unit_word = if always_plural {
+        if is_exact_one(&number_raw) {
+            singular
+        } else {
+            plural
+        }
+    } else {
+        singular
+    };
+    Some((
+        format!("{number_words} {unit_word}"),
+        idx + unit_len - start,
+    ))
+}
+
+fn match_unit_suffix(
+    chars: &[char],
+    start: usize,
+) -> Option<(&'static str, &'static str, usize, bool)> {
+    let tail = chars.get(start..)?;
+    let lower: String = tail.iter().take(5).collect::<String>().to_ascii_lowercase();
+    if lower.starts_with("km/h") {
+        return Some(("kilometers per hour", "kilometers per hour", 4, false));
+    }
+    if lower.starts_with("mph") {
+        return Some(("miles per hour", "miles per hour", 3, false));
+    }
+    if lower.starts_with("kph") {
+        return Some(("kilometers per hour", "kilometers per hour", 3, false));
+    }
+    if lower.starts_with("°c") {
+        return Some(("degrees Celsius", "degrees Celsius", 2, false));
+    }
+    if lower.starts_with("°f") {
+        return Some(("degrees Fahrenheit", "degrees Fahrenheit", 2, false));
+    }
+    if lower.starts_with("°k") {
+        return Some(("degrees Kelvin", "degrees Kelvin", 2, false));
+    }
+    if lower.starts_with("mm") {
+        return Some(("millimeter", "millimeters", 2, true));
+    }
+    if lower.starts_with("cm") {
+        return Some(("centimeter", "centimeters", 2, true));
+    }
+    if lower.starts_with("km") {
+        return Some(("kilometer", "kilometers", 2, true));
+    }
+    if lower.starts_with("in") {
+        return Some(("inch", "inches", 2, true));
+    }
+    if lower.starts_with("ft") {
+        return Some(("foot", "feet", 2, true));
+    }
+    if lower.starts_with("yd") {
+        return Some(("yard", "yards", 2, true));
+    }
+    if lower.starts_with("mg") {
+        return Some(("milligram", "milligrams", 2, true));
+    }
+    if lower.starts_with("g") {
+        return Some(("gram", "grams", 1, true));
+    }
+    if lower.starts_with("kg") {
+        return Some(("kilogram", "kilograms", 2, true));
+    }
+    if lower.starts_with("min") {
+        return Some(("minute", "minutes", 3, true));
+    }
+    if lower.starts_with("mi") {
+        return Some(("mile", "miles", 2, true));
+    }
+    if lower.starts_with("lb") {
+        return Some(("pound", "pounds", 2, true));
+    }
+    if lower.starts_with("oz") {
+        return Some(("ounce", "ounces", 2, true));
+    }
+    if lower.starts_with("hr") {
+        return Some(("hour", "hours", 2, true));
+    }
+    if lower.starts_with("sec") {
+        return Some(("second", "seconds", 3, true));
+    }
+    if lower.starts_with('s') {
+        return Some(("second", "seconds", 1, true));
+    }
+    if lower.starts_with('m') {
+        return Some(("meter", "meters", 1, true));
+    }
+    if lower.starts_with('t') {
+        return Some(("ton", "tons", 1, true));
+    }
+    None
+}
+
+fn scan_unit_number(chars: &[char], start: usize) -> Option<(String, usize)> {
+    if start > 0
+        && (chars[start - 1].is_ascii_alphanumeric() || matches!(chars[start - 1], ':' | '/'))
+    {
+        return None;
+    }
+    let mut i = start;
+    let mut out = String::new();
+    if matches!(chars.get(i), Some('+' | '-')) {
+        let sign = chars[i];
+        let next = chars.get(i + 1)?;
+        if !next.is_ascii_digit() {
+            return None;
+        }
+        if sign == '-' {
+            out.push(sign);
+        }
+        i += 1;
+    }
+    let mut saw_digit = false;
+    while let Some(&ch) = chars.get(i) {
+        if ch.is_ascii_digit() {
+            saw_digit = true;
+            out.push(ch);
+            i += 1;
+            continue;
+        }
+        if ch == ',' || ch == '.' {
+            out.push(ch);
+            i += 1;
+            continue;
+        }
+        break;
+    }
+    if saw_digit {
+        Some((out, i - start))
+    } else {
+        None
+    }
+}
+
+fn unit_ends_cleanly(chars: &[char], end: usize) -> bool {
+    match chars.get(end) {
+        None => true,
+        Some(ch) => !ch.is_ascii_alphabetic(),
+    }
+}
+
+fn is_exact_one(raw: &str) -> bool {
+    raw.trim_start_matches('0') == "1"
+}
+
 fn match_time(chars: &[char], start: usize) -> Option<(String, usize)> {
     if !matches!(chars.get(start), Some(ch) if ch.is_ascii_digit()) {
         return None;
@@ -941,7 +1116,7 @@ const TENS: [&str; 10] = [
 mod tests {
     use super::{
         normalize_abbreviations, normalize_acronyms, normalize_cardinals, normalize_dates,
-        normalize_money_time,
+        normalize_money_time, normalize_units,
     };
 
     #[test]
@@ -1061,5 +1236,25 @@ mod tests {
         );
         assert_eq!(normalize_dates("May 5"), "May fifth");
         assert_eq!(normalize_dates("Monday, May 6th"), "Monday, May sixth");
+    }
+
+    #[test]
+    fn normalizes_units() {
+        assert_eq!(normalize_units("5 kg"), "five kilograms");
+        assert_eq!(normalize_units("1 kg"), "one kilogram");
+        assert_eq!(normalize_units("0 kg"), "zero kilograms");
+        assert_eq!(normalize_units("0.5 kg"), "zero point five kilograms");
+        assert_eq!(normalize_units("5.5 kg"), "five point five kilograms");
+        assert_eq!(normalize_units("5 km"), "five kilometers");
+        assert_eq!(normalize_units("5 g"), "five grams");
+        assert_eq!(normalize_units("5 mph"), "five miles per hour");
+        assert_eq!(normalize_units("5 km/h"), "five kilometers per hour");
+        assert_eq!(normalize_units("5°C"), "five degrees Celsius");
+        assert_eq!(normalize_units("1 ft"), "one foot");
+        assert_eq!(normalize_units("2 ft"), "two feet");
+        assert_eq!(normalize_units("5 s"), "five seconds");
+        assert_eq!(normalize_units("5 sec"), "five seconds");
+        assert_eq!(normalize_units("5 min"), "five minutes");
+        assert_eq!(normalize_units("5 hr"), "five hours");
     }
 }
