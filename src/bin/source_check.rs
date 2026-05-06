@@ -31,13 +31,27 @@ impl Args {
         };
         while let Some(arg) = args.next() {
             match arg.as_str() {
-                "--model-dir" => parsed.model_dir = PathBuf::from(args.next().context("--model-dir requires a path")?),
+                "--model-dir" => {
+                    parsed.model_dir =
+                        PathBuf::from(args.next().context("--model-dir requires a path")?)
+                }
                 "--f0" => parsed.f0 = PathBuf::from(args.next().context("--f0 requires a path")?),
-                "--rand" => parsed.rand_ini = PathBuf::from(args.next().context("--rand requires a path")?),
-                "--noise" => parsed.noise = PathBuf::from(args.next().context("--noise requires a path")?),
-                "--ref" => parsed.reference = PathBuf::from(args.next().context("--ref requires a path")?),
-                "--uv-ref" => parsed.uv_reference = PathBuf::from(args.next().context("--uv-ref requires a path")?),
-                "--atol" => parsed.atol = args.next().context("--atol requires a value")?.parse()?,
+                "--rand" => {
+                    parsed.rand_ini = PathBuf::from(args.next().context("--rand requires a path")?)
+                }
+                "--noise" => {
+                    parsed.noise = PathBuf::from(args.next().context("--noise requires a path")?)
+                }
+                "--ref" => {
+                    parsed.reference = PathBuf::from(args.next().context("--ref requires a path")?)
+                }
+                "--uv-ref" => {
+                    parsed.uv_reference =
+                        PathBuf::from(args.next().context("--uv-ref requires a path")?)
+                }
+                "--atol" => {
+                    parsed.atol = args.next().context("--atol requires a value")?.parse()?
+                }
                 "--help" | "-h" => {
                     println!("usage: cargo run --bin source_check -- --model-dir models --f0 F0 --rand RAND --noise NOISE --ref REF --uv-ref UV_REF [--atol 1e-3]");
                     std::process::exit(0);
@@ -81,9 +95,19 @@ fn tensor_from_bin(path: &Path, device: &Device) -> Result<Tensor> {
     })
 }
 
-fn compare(name: &str, got: &Tensor, ref_shape: &[usize], ref_data: &[f32], atol: f32) -> Result<()> {
+fn compare(
+    name: &str,
+    got: &Tensor,
+    ref_shape: &[usize],
+    ref_data: &[f32],
+    atol: f32,
+) -> Result<()> {
     if got.dims() != ref_shape {
-        bail!("{name} shape mismatch: rust {:?} vs ref {:?}", got.dims(), ref_shape);
+        bail!(
+            "{name} shape mismatch: rust {:?} vs ref {:?}",
+            got.dims(),
+            ref_shape
+        );
     }
     let got_data = got.to_dtype(DType::F32)?.flatten_all()?.to_vec1::<f32>()?;
     let mut max_abs = 0f32;
@@ -108,7 +132,11 @@ fn compare(name: &str, got: &Tensor, ref_shape: &[usize], ref_data: &[f32], atol
         ref_data[argmax]
     );
     if max_abs > atol {
-        bail!("{name} FAIL: max_abs {:.3e} exceeds tolerance {:.3e}", max_abs, atol);
+        bail!(
+            "{name} FAIL: max_abs {:.3e} exceeds tolerance {:.3e}",
+            max_abs,
+            atol
+        );
     }
     Ok(())
 }

@@ -17,9 +17,13 @@ impl Args {
         };
         while let Some(arg) = args.next() {
             match arg.as_str() {
-                "--ref" => parsed.reference = PathBuf::from(args.next().context("--ref requires a path")?),
+                "--ref" => {
+                    parsed.reference = PathBuf::from(args.next().context("--ref requires a path")?)
+                }
                 "--help" | "-h" => {
-                    println!("usage: cargo run --bin lexicon_check -- --ref tmp/reference_lexicon.tsv");
+                    println!(
+                        "usage: cargo run --bin lexicon_check -- --ref tmp/reference_lexicon.tsv"
+                    );
                     std::process::exit(0);
                 }
                 other => bail!("unknown argument {other}"),
@@ -44,11 +48,7 @@ fn main() -> Result<()> {
         };
         let got = phonemizer.phonemize(case)?;
         if got != expected {
-            bail!(
-                "mismatch for {case:?}: rust={:?} ref={:?}",
-                got,
-                expected
-            );
+            bail!("mismatch for {case:?}: rust={:?} ref={:?}", got, expected);
         }
         n += 1;
         println!("{case}: OK");

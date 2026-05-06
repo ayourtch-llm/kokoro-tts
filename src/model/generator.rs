@@ -341,9 +341,9 @@ impl Generator {
             .transpose(1, 2)?; // [B, T_audio, 1]
 
         // NSF source: [B, T_audio, 1] sine_merge → squeeze → [B, T_audio]
-        let (har_source_3d, _, _) =
-            self.m_source
-                .forward_with_controls(&f0_up, rand_ini, noise)?;
+        let (har_source_3d, _, _) = self
+            .m_source
+            .forward_with_controls(&f0_up, rand_ini, noise)?;
         let har_source = har_source_3d.transpose(1, 2)?.squeeze(1)?;
         let (har_spec, har_phase) = self.stft.transform(&har_source)?;
         let har = Tensor::cat(&[&har_spec, &har_phase], 1)?;
@@ -401,9 +401,9 @@ impl Generator {
             .unsqueeze(1)?
             .upsample_nearest1d(f0_audio_len)?
             .transpose(1, 2)?;
-        let (har_source_3d, _, _) =
-            self.m_source
-                .forward_with_controls(&f0_up, rand_ini, noise)?;
+        let (har_source_3d, _, _) = self
+            .m_source
+            .forward_with_controls(&f0_up, rand_ini, noise)?;
         let har_source = har_source_3d.transpose(1, 2)?.squeeze(1)?;
         let (har_spec, har_phase) = self.stft.transform(&har_source)?;
         let har = Tensor::cat(&[&har_spec, &har_phase], 1)?;
@@ -447,7 +447,10 @@ fn dump_tensor(dir: &std::path::Path, name: &str, t: &Tensor) -> Result<()> {
     std::fs::create_dir_all(dir).ok();
     let path = dir.join(name);
     let dims = t.dims().to_vec();
-    let data: Vec<f32> = t.to_dtype(candle_core::DType::F32)?.flatten_all()?.to_vec1()?;
+    let data: Vec<f32> = t
+        .to_dtype(candle_core::DType::F32)?
+        .flatten_all()?
+        .to_vec1()?;
     let mut file = std::fs::File::create(&path)
         .map_err(|e| candle_core::Error::Msg(format!("create {}: {e}", path.display())))?;
     let ndim = dims.len() as u32;

@@ -64,25 +64,18 @@ impl CustomStft {
         Ok((magnitude, phase))
     }
 
-    pub fn inverse(&self, magnitude: &Tensor, phase: &Tensor, length: Option<usize>) -> Result<Tensor> {
+    pub fn inverse(
+        &self,
+        magnitude: &Tensor,
+        phase: &Tensor,
+        length: Option<usize>,
+    ) -> Result<Tensor> {
         let real_part = (magnitude * &phase.cos()?)?;
         let imag_part = (magnitude * &phase.sin()?)?;
-        let real_rec = real_part.conv_transpose1d(
-            &self.weight_backward_real,
-            0,
-            0,
-            self.hop_length,
-            1,
-            1,
-        )?;
-        let imag_rec = imag_part.conv_transpose1d(
-            &self.weight_backward_imag,
-            0,
-            0,
-            self.hop_length,
-            1,
-            1,
-        )?;
+        let real_rec =
+            real_part.conv_transpose1d(&self.weight_backward_real, 0, 0, self.hop_length, 1, 1)?;
+        let imag_rec =
+            imag_part.conv_transpose1d(&self.weight_backward_imag, 0, 0, self.hop_length, 1, 1)?;
         let mut waveform = (real_rec - imag_rec)?;
         if self.center {
             let pad = self.n_fft / 2;

@@ -29,12 +29,28 @@ impl Args {
         };
         while let Some(arg) = args.next() {
             match arg.as_str() {
-                "--model-dir" => parsed.model_dir = PathBuf::from(args.next().context("--model-dir requires a path")?),
-                "--input" => parsed.input = PathBuf::from(args.next().context("--input requires a path")?),
-                "--ref" => parsed.reference = PathBuf::from(args.next().context("--ref requires a path")?),
-                "--alpha-key" => parsed.alpha_key = args.next().context("--alpha-key requires a value")?,
-                "--channels" => parsed.channels = args.next().context("--channels requires a value")?.parse()?,
-                "--atol" => parsed.atol = args.next().context("--atol requires a value")?.parse()?,
+                "--model-dir" => {
+                    parsed.model_dir =
+                        PathBuf::from(args.next().context("--model-dir requires a path")?)
+                }
+                "--input" => {
+                    parsed.input = PathBuf::from(args.next().context("--input requires a path")?)
+                }
+                "--ref" => {
+                    parsed.reference = PathBuf::from(args.next().context("--ref requires a path")?)
+                }
+                "--alpha-key" => {
+                    parsed.alpha_key = args.next().context("--alpha-key requires a value")?
+                }
+                "--channels" => {
+                    parsed.channels = args
+                        .next()
+                        .context("--channels requires a value")?
+                        .parse()?
+                }
+                "--atol" => {
+                    parsed.atol = args.next().context("--atol requires a value")?.parse()?
+                }
                 "--help" | "-h" => {
                     println!("usage: cargo run --bin snake_check -- --model-dir models --input IN --ref REF --alpha-key KEY [--channels 256] [--atol 1e-6]");
                     std::process::exit(0);
@@ -92,7 +108,11 @@ fn main() -> Result<()> {
     let snake = Snake1d::load_named(args.channels, vb, &args.alpha_key)?;
     let out = snake.forward(&input)?;
     if out.dims() != ref_shape {
-        bail!("shape mismatch: rust {:?} vs ref {:?}", out.dims(), ref_shape);
+        bail!(
+            "shape mismatch: rust {:?} vs ref {:?}",
+            out.dims(),
+            ref_shape
+        );
     }
     let out_data = out.to_dtype(DType::F32)?.flatten_all()?.to_vec1::<f32>()?;
     let mut max_abs = 0f32;
@@ -117,7 +137,11 @@ fn main() -> Result<()> {
         ref_data[argmax]
     );
     if max_abs > args.atol {
-        bail!("FAIL: max_abs {:.3e} exceeds tolerance {:.3e}", max_abs, args.atol);
+        bail!(
+            "FAIL: max_abs {:.3e} exceeds tolerance {:.3e}",
+            max_abs,
+            args.atol
+        );
     }
     println!("OK");
     Ok(())

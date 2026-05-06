@@ -30,8 +30,7 @@ impl Args {
                     parsed.phonemes = args.next().context("--phonemes requires a value")?
                 }
                 "--ref" => {
-                    parsed.reference =
-                        PathBuf::from(args.next().context("--ref requires a path")?)
+                    parsed.reference = PathBuf::from(args.next().context("--ref requires a path")?)
                 }
                 "--help" | "-h" => {
                     println!(

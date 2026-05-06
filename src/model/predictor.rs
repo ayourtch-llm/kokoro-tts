@@ -503,12 +503,7 @@ impl ProsodyPredictor {
 
     /// Run the predictor's text encoder. Returns the intermediate features `d`
     /// of shape `[B, hidden_dim, T]` — needed for both duration and F0/N paths.
-    pub fn text_encode(
-        &self,
-        d_en: &Tensor,
-        style: &Tensor,
-        text_mask: &Tensor,
-    ) -> Result<Tensor> {
+    pub fn text_encode(&self, d_en: &Tensor, style: &Tensor, text_mask: &Tensor) -> Result<Tensor> {
         self.text_encoder.forward(d_en, style, text_mask)
     }
 

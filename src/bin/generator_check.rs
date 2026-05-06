@@ -33,7 +33,9 @@ impl Args {
         };
         while let Some(arg) = args.next() {
             match arg.as_str() {
-                "--model-dir" => parsed.model_dir = PathBuf::from(args.next().context("--model-dir")?),
+                "--model-dir" => {
+                    parsed.model_dir = PathBuf::from(args.next().context("--model-dir")?)
+                }
                 "--x" => parsed.x = PathBuf::from(args.next().context("--x")?),
                 "--s" => parsed.s = PathBuf::from(args.next().context("--s")?),
                 "--f0" => parsed.f0 = PathBuf::from(args.next().context("--f0")?),
@@ -117,7 +119,11 @@ fn main() -> Result<()> {
     let out = gen.forward_with_controls(&x, &s, &f0, Some(&rand_ini), Some(&noise))?;
 
     if out.dims() != ref_shape {
-        bail!("shape mismatch: rust {:?} vs ref {:?}", out.dims(), ref_shape);
+        bail!(
+            "shape mismatch: rust {:?} vs ref {:?}",
+            out.dims(),
+            ref_shape
+        );
     }
     let out_data = out.to_dtype(DType::F32)?.flatten_all()?.to_vec1::<f32>()?;
     let mut max_abs = 0f32;
@@ -144,8 +150,13 @@ fn main() -> Result<()> {
         ref_data[argmax]
     );
     if max_abs > args.atol * max_ref.max(1.0) {
-        bail!("FAIL: max_abs {:.3e} exceeds {:.3e} (atol {:.3e} * max_ref {:.3e})",
-            max_abs, args.atol * max_ref.max(1.0), args.atol, max_ref);
+        bail!(
+            "FAIL: max_abs {:.3e} exceeds {:.3e} (atol {:.3e} * max_ref {:.3e})",
+            max_abs,
+            args.atol * max_ref.max(1.0),
+            args.atol,
+            max_ref
+        );
     }
     println!("OK");
     Ok(())

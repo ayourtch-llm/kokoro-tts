@@ -130,9 +130,19 @@ fn select_predictor_style(path: &Path, style_index: usize, device: &Device) -> R
     Ok(style.narrow(1, 128, style.dim(1)? - 128)?)
 }
 
-fn compare(name: &str, rust: &Tensor, ref_shape: &[usize], ref_data: &[f32], atol: f32) -> Result<()> {
+fn compare(
+    name: &str,
+    rust: &Tensor,
+    ref_shape: &[usize],
+    ref_data: &[f32],
+    atol: f32,
+) -> Result<()> {
     if rust.dims() != ref_shape {
-        bail!("{name} shape mismatch: rust {:?} vs ref {:?}", rust.dims(), ref_shape);
+        bail!(
+            "{name} shape mismatch: rust {:?} vs ref {:?}",
+            rust.dims(),
+            ref_shape
+        );
     }
     let rust_data = rust.to_dtype(DType::F32)?.flatten_all()?.to_vec1::<f32>()?;
     let mut max_abs = 0f32;
@@ -157,7 +167,11 @@ fn compare(name: &str, rust: &Tensor, ref_shape: &[usize], ref_data: &[f32], ato
         ref_data[argmax]
     );
     if max_abs > atol {
-        bail!("{name} FAIL: max_abs {:.3e} exceeds tolerance {:.3e}", max_abs, atol);
+        bail!(
+            "{name} FAIL: max_abs {:.3e} exceeds tolerance {:.3e}",
+            max_abs,
+            atol
+        );
     }
     Ok(())
 }

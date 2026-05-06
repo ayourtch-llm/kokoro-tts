@@ -35,8 +35,7 @@ impl Args {
                         .context("parsing --phoneme-count")?;
                 }
                 "--ref" => {
-                    parsed.reference =
-                        PathBuf::from(args.next().context("--ref requires a path")?)
+                    parsed.reference = PathBuf::from(args.next().context("--ref requires a path")?)
                 }
                 "--atol" => {
                     parsed.atol = args
@@ -102,7 +101,11 @@ fn select_voice_style(path: &Path, phoneme_count: usize, device: &Device) -> Res
 
 fn compare(rust: &Tensor, ref_shape: &[usize], ref_data: &[f32], atol: f32) -> Result<()> {
     if rust.dims() != ref_shape {
-        bail!("shape mismatch: rust {:?} vs ref {:?}", rust.dims(), ref_shape);
+        bail!(
+            "shape mismatch: rust {:?} vs ref {:?}",
+            rust.dims(),
+            ref_shape
+        );
     }
     let rust_data = rust.to_dtype(DType::F32)?.flatten_all()?.to_vec1::<f32>()?;
     let mut max_abs = 0f32;
@@ -127,7 +130,11 @@ fn compare(rust: &Tensor, ref_shape: &[usize], ref_data: &[f32], atol: f32) -> R
         ref_data[argmax]
     );
     if max_abs > atol {
-        bail!("FAIL: max_abs {:.3e} exceeds tolerance {:.3e}", max_abs, atol);
+        bail!(
+            "FAIL: max_abs {:.3e} exceeds tolerance {:.3e}",
+            max_abs,
+            atol
+        );
     }
     Ok(())
 }

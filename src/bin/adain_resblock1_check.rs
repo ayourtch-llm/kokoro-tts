@@ -37,15 +37,38 @@ impl Args {
         };
         while let Some(arg) = args.next() {
             match arg.as_str() {
-                "--model-dir" => parsed.model_dir = PathBuf::from(args.next().context("--model-dir requires a path")?),
-                "--input" => parsed.input = PathBuf::from(args.next().context("--input requires a path")?),
-                "--style" => parsed.style = PathBuf::from(args.next().context("--style requires a path")?),
-                "--ref" => parsed.reference = PathBuf::from(args.next().context("--ref requires a path")?),
+                "--model-dir" => {
+                    parsed.model_dir =
+                        PathBuf::from(args.next().context("--model-dir requires a path")?)
+                }
+                "--input" => {
+                    parsed.input = PathBuf::from(args.next().context("--input requires a path")?)
+                }
+                "--style" => {
+                    parsed.style = PathBuf::from(args.next().context("--style requires a path")?)
+                }
+                "--ref" => {
+                    parsed.reference = PathBuf::from(args.next().context("--ref requires a path")?)
+                }
                 "--prefix" => parsed.prefix = args.next().context("--prefix requires a value")?,
-                "--channels" => parsed.channels = args.next().context("--channels requires a value")?.parse()?,
-                "--kernel" => parsed.kernel = args.next().context("--kernel requires a value")?.parse()?,
-                "--style-dim" => parsed.style_dim = args.next().context("--style-dim requires a value")?.parse()?,
-                "--atol" => parsed.atol = args.next().context("--atol requires a value")?.parse()?,
+                "--channels" => {
+                    parsed.channels = args
+                        .next()
+                        .context("--channels requires a value")?
+                        .parse()?
+                }
+                "--kernel" => {
+                    parsed.kernel = args.next().context("--kernel requires a value")?.parse()?
+                }
+                "--style-dim" => {
+                    parsed.style_dim = args
+                        .next()
+                        .context("--style-dim requires a value")?
+                        .parse()?
+                }
+                "--atol" => {
+                    parsed.atol = args.next().context("--atol requires a value")?.parse()?
+                }
                 "--help" | "-h" => {
                     println!("usage: cargo run --bin adain_resblock1_check -- [--model-dir DIR] [--input IN] [--style S] [--ref REF] [--prefix PREFIX] [--channels N] [--kernel K] [--style-dim D] [--atol T]");
                     std::process::exit(0);
@@ -119,7 +142,11 @@ fn main() -> Result<()> {
     let out = block.forward(&input, &style)?;
 
     if out.dims() != ref_shape {
-        bail!("shape mismatch: rust {:?} vs ref {:?}", out.dims(), ref_shape);
+        bail!(
+            "shape mismatch: rust {:?} vs ref {:?}",
+            out.dims(),
+            ref_shape
+        );
     }
     let out_data = out.to_dtype(DType::F32)?.flatten_all()?.to_vec1::<f32>()?;
     let mut max_abs = 0f32;
@@ -144,7 +171,11 @@ fn main() -> Result<()> {
         ref_data[argmax]
     );
     if max_abs > args.atol {
-        bail!("FAIL: max_abs {:.3e} exceeds tolerance {:.3e}", max_abs, args.atol);
+        bail!(
+            "FAIL: max_abs {:.3e} exceeds tolerance {:.3e}",
+            max_abs,
+            args.atol
+        );
     }
     println!("OK");
     Ok(())

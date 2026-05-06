@@ -68,11 +68,17 @@ impl SineGen {
         let f0_data = f0.to_dtype(DType::F32)?.flatten_all()?.to_vec1::<f32>()?;
 
         let rand_ini = match rand_ini {
-            Some(rand_ini) => rand_ini.to_dtype(DType::F32)?.flatten_all()?.to_vec1::<f32>()?,
+            Some(rand_ini) => rand_ini
+                .to_dtype(DType::F32)?
+                .flatten_all()?
+                .to_vec1::<f32>()?,
             None => vec![0.0; batch * dim],
         };
         let noise = match noise {
-            Some(noise) => noise.to_dtype(DType::F32)?.flatten_all()?.to_vec1::<f32>()?,
+            Some(noise) => noise
+                .to_dtype(DType::F32)?
+                .flatten_all()?
+                .to_vec1::<f32>()?,
             None => vec![0.0; batch * time * dim],
         };
 
@@ -98,7 +104,13 @@ impl SineGen {
             }
         }
 
-        let down = interpolate_linear_btd(&rad_values, batch, time, dim, 1.0 / self.upsample_scale as f64);
+        let down = interpolate_linear_btd(
+            &rad_values,
+            batch,
+            time,
+            dim,
+            1.0 / self.upsample_scale as f64,
+        );
         let down_time = down.len() / (batch * dim);
         let mut phase = vec![0.0f32; batch * down_time * dim];
         let scale = (2.0 * std::f64::consts::PI) as f32;
@@ -114,13 +126,8 @@ impl SineGen {
         for value in &mut phase {
             *value *= self.upsample_scale as f32;
         }
-        let phase = interpolate_linear_btd(
-            &phase,
-            batch,
-            down_time,
-            dim,
-            self.upsample_scale as f64,
-        );
+        let phase =
+            interpolate_linear_btd(&phase, batch, down_time, dim, self.upsample_scale as f64);
         let out_time = phase.len() / (batch * dim);
         let mut sine_waves = vec![0.0f32; batch * out_time * dim];
         let mut noise_out = vec![0.0f32; batch * out_time * dim];
@@ -167,7 +174,8 @@ impl SourceModuleHnNsf {
         rand_ini: Option<&Tensor>,
         noise: Option<&Tensor>,
     ) -> Result<(Tensor, Tensor, Tensor)> {
-        let (sine_waves, uv, sine_noise) = self.sine_gen.forward_with_controls(f0, rand_ini, noise)?;
+        let (sine_waves, uv, sine_noise) =
+            self.sine_gen.forward_with_controls(f0, rand_ini, noise)?;
         let sine_merge = self.linear.forward(&sine_waves)?.tanh()?;
         Ok((sine_merge, sine_noise, uv))
     }

@@ -131,9 +131,9 @@ impl Kokoro {
     /// and `s_dec = ref_s[:, :128]` for the decoder per upstream model.py:104,118).
     pub fn load_voice(path: &Path, phoneme_count: usize, device: &Device) -> Result<Tensor> {
         let tensors = candle_core::safetensors::load(path, device)?;
-        let ref_s = tensors
-            .get("ref_s")
-            .ok_or_else(|| candle_core::Error::Msg(format!("missing ref_s in {}", path.display())))?;
+        let ref_s = tensors.get("ref_s").ok_or_else(|| {
+            candle_core::Error::Msg(format!("missing ref_s in {}", path.display()))
+        })?;
         let n = ref_s.dim(0)?;
         let idx = phoneme_count.min(n.saturating_sub(1));
         Ok(ref_s.narrow(0, idx, 1)?.squeeze(0)?)
@@ -179,8 +179,7 @@ impl Kokoro {
         // Predictor text features (used twice: for duration logits and for F0/N input).
         let d = self.predictor.text_encode(&d_en, &s_pred, &text_mask)?;
         let duration_logits = self.predictor.duration_from_features(&d, &s_pred)?;
-        let duration = candle_nn::ops::sigmoid(&duration_logits)?
-            .sum(candle_core::D::Minus1)?;
+        let duration = candle_nn::ops::sigmoid(&duration_logits)?.sum(candle_core::D::Minus1)?;
         let duration = (duration / speed)?;
         let duration_vals = duration.flatten_all()?.to_vec1::<f32>()?;
         let pred_dur: Vec<i64> = duration_vals
@@ -192,11 +191,8 @@ impl Kokoro {
         let alignment_2d = alignment_from_durations(&pred_dur)?;
         let total_frames: usize = pred_dur.iter().sum::<i64>() as usize;
         let alignment_flat: Vec<f32> = alignment_2d.into_iter().flatten().collect();
-        let alignment = Tensor::from_vec(
-            alignment_flat,
-            (1, input_len, total_frames),
-            ref_s.device(),
-        )?;
+        let alignment =
+            Tensor::from_vec(alignment_flat, (1, input_len, total_frames), ref_s.device())?;
 
         // F0/N from predictor: en = d @ alignment, then fn_train re-concats style internally.
         let en = d.matmul(&alignment)?;

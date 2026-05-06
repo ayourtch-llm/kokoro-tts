@@ -35,10 +35,11 @@ impl MisakiGoldLexicon {
     }
 
     pub fn lookup(&self, word: &str) -> Option<&str> {
-        self.entries
-            .get(word)
-            .map(String::as_str)
-            .or_else(|| self.entries.get(&word.to_ascii_lowercase()).map(String::as_str))
+        self.entries.get(word).map(String::as_str).or_else(|| {
+            self.entries
+                .get(&word.to_ascii_lowercase())
+                .map(String::as_str)
+        })
     }
 }
 

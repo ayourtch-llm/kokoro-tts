@@ -29,7 +29,9 @@ impl Args {
         };
         while let Some(arg) = args.next() {
             match arg.as_str() {
-                "--model-dir" => parsed.model_dir = PathBuf::from(args.next().context("--model-dir")?),
+                "--model-dir" => {
+                    parsed.model_dir = PathBuf::from(args.next().context("--model-dir")?)
+                }
                 "--voice" => parsed.voice = PathBuf::from(args.next().context("--voice")?),
                 "--text" => parsed.text = Some(args.next().context("--text")?),
                 "--phonemes" => parsed.phonemes = Some(args.next().context("--phonemes")?),
@@ -63,17 +65,27 @@ fn main() -> Result<()> {
     let phoneme_count = phonemes.chars().count();
     let ref_s = Kokoro::load_voice(&args.voice, phoneme_count, &device)
         .with_context(|| format!("loading voice {}", args.voice.display()))?;
-    println!("voice: {} (phoneme_count={}) shape={:?}", args.voice.display(), phoneme_count, ref_s.dims());
+    println!(
+        "voice: {} (phoneme_count={}) shape={:?}",
+        args.voice.display(),
+        phoneme_count,
+        ref_s.dims()
+    );
 
     println!("loading model from {} ...", args.model_dir.display());
     let model = Kokoro::load(&args.model_dir, &device).context("loading Kokoro")?;
     println!("model loaded, running forward ...");
 
     let t0 = std::time::Instant::now();
-    let audio = model.forward(&phonemes, &ref_s, args.speed).context("forward")?;
+    let audio = model
+        .forward(&phonemes, &ref_s, args.speed)
+        .context("forward")?;
     let dt = t0.elapsed();
 
-    let samples = audio.to_dtype(DType::F32)?.flatten_all()?.to_vec1::<f32>()?;
+    let samples = audio
+        .to_dtype(DType::F32)?
+        .flatten_all()?
+        .to_vec1::<f32>()?;
     let max_abs = samples.iter().fold(0f32, |m, &v| m.max(v.abs()));
     let n_samples = samples.len();
     let duration_s = n_samples as f64 / 24_000.0;
@@ -106,7 +118,10 @@ fn main() -> Result<()> {
     writer.finalize()?;
     println!("wrote {}", args.out.display());
     if scale < 1.0 {
-        println!("(soft-normalized by {:.4} because peak {:.3} > 1.0)", scale, max_abs);
+        println!(
+            "(soft-normalized by {:.4} because peak {:.3} > 1.0)",
+            scale, max_abs
+        );
     }
     Ok(())
 }

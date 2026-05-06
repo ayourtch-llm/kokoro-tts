@@ -25,8 +25,7 @@ impl Args {
                         PathBuf::from(args.next().context("--durations requires a path")?)
                 }
                 "--ref" => {
-                    parsed.reference =
-                        PathBuf::from(args.next().context("--ref requires a path")?)
+                    parsed.reference = PathBuf::from(args.next().context("--ref requires a path")?)
                 }
                 "--help" | "-h" => {
                     println!(

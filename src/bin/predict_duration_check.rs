@@ -62,8 +62,7 @@ impl Args {
                     parsed.input = PathBuf::from(args.next().context("--input requires a path")?)
                 }
                 "--ref" => {
-                    parsed.reference =
-                        PathBuf::from(args.next().context("--ref requires a path")?)
+                    parsed.reference = PathBuf::from(args.next().context("--ref requires a path")?)
                 }
                 "--durations-ref" => {
                     parsed.durations_ref =
@@ -165,7 +164,11 @@ fn select_predictor_style(path: &Path, style_index: usize, device: &Device) -> R
 
 fn compare_f32(rust: &Tensor, ref_shape: &[usize], ref_data: &[f32], atol: f32) -> Result<()> {
     if rust.dims() != ref_shape {
-        bail!("shape mismatch: rust {:?} vs ref {:?}", rust.dims(), ref_shape);
+        bail!(
+            "shape mismatch: rust {:?} vs ref {:?}",
+            rust.dims(),
+            ref_shape
+        );
     }
     let rust_data = rust.to_dtype(DType::F32)?.flatten_all()?.to_vec1::<f32>()?;
     let mut max_abs = 0f32;
@@ -190,7 +193,11 @@ fn compare_f32(rust: &Tensor, ref_shape: &[usize], ref_data: &[f32], atol: f32) 
         ref_data[argmax]
     );
     if max_abs > atol {
-        bail!("FAIL: logits max_abs {:.3e} exceeds tolerance {:.3e}", max_abs, atol);
+        bail!(
+            "FAIL: logits max_abs {:.3e} exceeds tolerance {:.3e}",
+            max_abs,
+            atol
+        );
     }
     Ok(())
 }

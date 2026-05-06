@@ -63,15 +63,10 @@ impl Args {
                 "--asr" => {
                     parsed.asr = PathBuf::from(args.next().context("--asr requires a path")?)
                 }
-                "--f0" => {
-                    parsed.f0 = PathBuf::from(args.next().context("--f0 requires a path")?)
-                }
-                "--n" => {
-                    parsed.n = PathBuf::from(args.next().context("--n requires a path")?)
-                }
+                "--f0" => parsed.f0 = PathBuf::from(args.next().context("--f0 requires a path")?),
+                "--n" => parsed.n = PathBuf::from(args.next().context("--n requires a path")?),
                 "--ref" => {
-                    parsed.reference =
-                        PathBuf::from(args.next().context("--ref requires a path")?)
+                    parsed.reference = PathBuf::from(args.next().context("--ref requires a path")?)
                 }
                 "--atol" => {
                     parsed.atol = args
@@ -140,12 +135,20 @@ fn tensor_from_bin(shape: &[usize], data: Vec<f32>, device: &Device) -> Result<T
     if shape.len() != 3 {
         bail!("expected rank-3 tensor, got shape {shape:?}");
     }
-    Ok(Tensor::from_vec(data, (shape[0], shape[1], shape[2]), device)?)
+    Ok(Tensor::from_vec(
+        data,
+        (shape[0], shape[1], shape[2]),
+        device,
+    )?)
 }
 
 fn compare(rust: &Tensor, ref_shape: &[usize], ref_data: &[f32], atol: f32) -> Result<()> {
     if rust.dims() != ref_shape {
-        bail!("shape mismatch: rust {:?} vs ref {:?}", rust.dims(), ref_shape);
+        bail!(
+            "shape mismatch: rust {:?} vs ref {:?}",
+            rust.dims(),
+            ref_shape
+        );
     }
     let rust_data = rust.to_dtype(DType::F32)?.flatten_all()?.to_vec1::<f32>()?;
     let mut max_abs = 0f32;
@@ -170,7 +173,11 @@ fn compare(rust: &Tensor, ref_shape: &[usize], ref_data: &[f32], atol: f32) -> R
         ref_data[argmax]
     );
     if max_abs > atol {
-        bail!("FAIL: max_abs {:.3e} exceeds tolerance {:.3e}", max_abs, atol);
+        bail!(
+            "FAIL: max_abs {:.3e} exceeds tolerance {:.3e}",
+            max_abs,
+            atol
+        );
     }
     Ok(())
 }
