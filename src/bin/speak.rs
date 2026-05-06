@@ -5,7 +5,9 @@ use candle_core::{DType, Device};
 use kokoro_tts::audio::play_samples;
 use kokoro_tts::model::Kokoro;
 use kokoro_tts::phonemizer::{TwoTierPhonemizer, MILESTONE_TEST_PHONEMES};
-use kokoro_tts::synthesis::{samples_to_tensor, synthesize_phonemes, synthesize_text};
+use kokoro_tts::synthesis::{
+    samples_to_tensor, soft_normalize, synthesize_phonemes, synthesize_text, write_wav,
+};
 use std::path::PathBuf;
 
 #[derive(Debug)]
@@ -73,45 +75,28 @@ fn main() -> Result<()> {
         .to_dtype(DType::F32)?
         .flatten_all()?
         .to_vec1::<f32>()?;
-    let max_abs = samples.iter().fold(0f32, |m, &v| m.max(v.abs()));
+    let (samples, scale) = soft_normalize(&samples);
     let n_samples = samples.len();
     let duration_s = n_samples as f64 / 24_000.0;
     println!(
         "synthesized {} samples ({:.3}s @ 24 kHz) max_abs={:.4} in {:.3}s ({:.2}x realtime)",
         n_samples,
         duration_s,
-        max_abs,
+        if scale > 0.0 { 1.0 / scale } else { 0.0 },
         dt.as_secs_f64(),
         duration_s / dt.as_secs_f64()
     );
 
-    // Normalize-soft if peaks > 1 (some test inputs produce huge outputs)
-    let scale = if max_abs > 1.0 { 1.0 / max_abs } else { 1.0 };
-    let samples: Vec<f32> = samples.iter().map(|&v| v * scale).collect();
     if args.play {
         play_samples(&samples, 24_000).context("playback")?;
     }
-    let pcm: Vec<i16> = samples
-        .iter()
-        .map(|&v| (v * i16::MAX as f32).clamp(i16::MIN as f32, i16::MAX as f32) as i16)
-        .collect();
-    let spec = hound::WavSpec {
-        channels: 1,
-        sample_rate: 24_000,
-        bits_per_sample: 16,
-        sample_format: hound::SampleFormat::Int,
-    };
-    let mut writer = hound::WavWriter::create(&args.out, spec)
-        .with_context(|| format!("opening {}", args.out.display()))?;
-    for &s in &pcm {
-        writer.write_sample(s)?;
-    }
-    writer.finalize()?;
+    write_wav(&samples, &args.out)?;
     println!("wrote {}", args.out.display());
     if scale < 1.0 {
         println!(
             "(soft-normalized by {:.4} because peak {:.3} > 1.0)",
-            scale, max_abs
+            scale,
+            1.0 / scale
         );
     }
     Ok(())

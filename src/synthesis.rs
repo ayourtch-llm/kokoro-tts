@@ -2,7 +2,9 @@ use crate::model::Kokoro;
 use crate::phonemizer::Phonemizer;
 use anyhow::{bail, Context, Result};
 use candle_core::{Device, Tensor};
+use std::fs;
 use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const SILENCE_PADDING_SAMPLES: usize = 24_000 * 80 / 1_000;
 pub const MAX_SENTENCE_PHONEMES: usize = 510;
@@ -111,4 +113,58 @@ pub fn concat_with_silence(chunks: &[Vec<f32>], silence_padding_samples: usize) 
 pub fn samples_to_tensor(samples: Vec<f32>, device: &Device) -> Result<Tensor> {
     let n_samples = samples.len();
     Tensor::from_vec(samples, (1, n_samples), device).context("assembling chunked audio tensor")
+}
+
+pub fn soft_normalize(samples: &[f32]) -> (Vec<f32>, f32) {
+    let max_abs = samples.iter().fold(0f32, |m, &v| m.max(v.abs()));
+    let scale = if max_abs > 1.0 { 1.0 / max_abs } else { 1.0 };
+    let normalized = samples.iter().map(|&v| v * scale).collect();
+    (normalized, scale)
+}
+
+pub fn write_wav(samples: &[f32], path: &Path) -> Result<()> {
+    let spec = hound::WavSpec {
+        channels: 1,
+        sample_rate: 24_000,
+        bits_per_sample: 16,
+        sample_format: hound::SampleFormat::Int,
+    };
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+    }
+    let mut writer = hound::WavWriter::create(path, spec)
+        .with_context(|| format!("opening {}", path.display()))?;
+    for &sample in samples {
+        let pcm = (sample * i16::MAX as f32).clamp(i16::MIN as f32, i16::MAX as f32) as i16;
+        writer.write_sample(pcm)?;
+    }
+    writer.finalize()?;
+    Ok(())
+}
+
+pub fn timestamped_wav_name(now: SystemTime) -> String {
+    let duration = now.duration_since(UNIX_EPOCH).unwrap_or_default();
+    let secs = duration.as_secs() as i64;
+    let micros = duration.subsec_micros();
+    let days = secs.div_euclid(86_400);
+    let secs_of_day = secs.rem_euclid(86_400);
+    let (year, month, day) = civil_from_days(days);
+    let hour = secs_of_day / 3_600;
+    let minute = (secs_of_day % 3_600) / 60;
+    let second = secs_of_day % 60;
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}-{minute:02}-{second:02}.{micros:06}Z.wav")
+}
+
+fn civil_from_days(days: i64) -> (i32, u32, u32) {
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = mp + if mp < 10 { 3 } else { -9 };
+    let year = y + if m <= 2 { 1 } else { 0 };
+    (year as i32, m as u32, d as u32)
 }

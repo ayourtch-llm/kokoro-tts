@@ -5,7 +5,8 @@ use candle_core::Device;
 use kokoro_tts::audio::play_samples;
 use kokoro_tts::model::Kokoro;
 use kokoro_tts::phonemizer::TwoTierPhonemizer;
-use kokoro_tts::synthesis::synthesize_text;
+use kokoro_tts::synthesis::{soft_normalize, synthesize_text, timestamped_wav_name, write_wav};
+use std::fs;
 use std::net::UdpSocket;
 use std::path::PathBuf;
 
@@ -14,6 +15,7 @@ struct Args {
     listen: String,
     model_dir: PathBuf,
     voice: PathBuf,
+    save_wav_dir: Option<PathBuf>,
     speed: f64,
     verbose: bool,
 }
@@ -25,6 +27,7 @@ impl Args {
             listen: "127.0.0.1:9876".to_string(),
             model_dir: PathBuf::from("models"),
             voice: PathBuf::from("models/voices/af_heart.safetensors"),
+            save_wav_dir: None,
             speed: 1.0,
             verbose: false,
         };
@@ -35,11 +38,15 @@ impl Args {
                     parsed.model_dir = PathBuf::from(args.next().context("--model-dir")?)
                 }
                 "--voice" => parsed.voice = PathBuf::from(args.next().context("--voice")?),
+                "--save-wav-dir" => {
+                    parsed.save_wav_dir =
+                        Some(PathBuf::from(args.next().context("--save-wav-dir")?))
+                }
                 "--speed" => parsed.speed = args.next().context("--speed")?.parse()?,
                 "--verbose" => parsed.verbose = true,
                 "--help" | "-h" => {
                     println!(
-                        "usage: cargo run --release --bin speak-server -- [--listen HOST:PORT] [--model-dir DIR] [--voice PATH] [--speed F] [--verbose]"
+                        "usage: cargo run --release --bin speak-server -- [--listen HOST:PORT] [--model-dir DIR] [--voice PATH] [--save-wav-dir DIR] [--speed F] [--verbose]"
                     );
                     std::process::exit(0);
                 }
@@ -89,16 +96,38 @@ fn main() -> Result<()> {
         )?;
         let synth_elapsed = synth_start.elapsed();
 
+        let (samples, _scale) = soft_normalize(&samples);
         let play_start = std::time::Instant::now();
         play_samples(&samples, 24_000).context("playback")?;
         let play_elapsed = play_start.elapsed();
 
-        tracing::info!(
-            %peer,
-            synth_ms = synth_elapsed.as_millis(),
-            play_ms = play_elapsed.as_millis(),
-            samples = samples.len(),
-            "processed datagram"
-        );
+        let save_path = if let Some(dir) = &args.save_wav_dir {
+            fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+            let path = dir.join(timestamped_wav_name(std::time::SystemTime::now()));
+            write_wav(&samples, &path)?;
+            Some(path)
+        } else {
+            None
+        };
+
+        if let Some(path) = &save_path {
+            tracing::info!(
+                %peer,
+                synth_ms = synth_elapsed.as_millis(),
+                play_ms = play_elapsed.as_millis(),
+                samples = samples.len(),
+                saved = %path.display(),
+                "processed datagram"
+            );
+            tracing::info!(saved = %path.display(), "saved wav");
+        } else {
+            tracing::info!(
+                %peer,
+                synth_ms = synth_elapsed.as_millis(),
+                play_ms = play_elapsed.as_millis(),
+                samples = samples.len(),
+                "processed datagram"
+            );
+        }
     }
 }
