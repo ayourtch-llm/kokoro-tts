@@ -2,7 +2,7 @@
 
 use anyhow::{bail, Context, Result};
 use candle_core::Device;
-use kokoro_tts::audio::StreamingAudioOutput;
+use kokoro_tts::audio::{StreamingAudioHandle, StreamingAudioOutput};
 use kokoro_tts::model::Kokoro;
 use kokoro_tts::phonemizer::TwoTierPhonemizer;
 use kokoro_tts::synthesis::{
@@ -10,11 +10,13 @@ use kokoro_tts::synthesis::{
     SILENCE_PADDING_SAMPLES,
 };
 use serde::Deserialize;
+use std::collections::VecDeque;
 use std::fs;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream, ToSocketAddrs, UdpSocket};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Condvar, Mutex};
+use std::thread;
 use std::time::Duration;
 
 #[derive(Debug)]
@@ -88,41 +90,59 @@ fn main() -> Result<()> {
         Kokoro::load(&model_dir, &device)
             .with_context(|| format!("loading Kokoro from {}", model_dir.display()))?,
     );
-    let audio = Arc::new(
-        StreamingAudioOutput::open_with_reference(reference_out)
-            .context("opening output stream")?,
-    );
-    let shared = Arc::new(SharedState {
+    let audio_output = StreamingAudioOutput::open_with_reference(reference_out)
+        .context("opening output stream")?;
+    let audio = audio_output.handle();
+    let queue = SynthQueue::new();
+    let worker_state = WorkerState {
         model,
         voice,
-        audio,
+        audio: audio.clone(),
         save_wav_dir: args.save_wav_dir.clone(),
         speed: args.speed,
         verbose: args.verbose,
-    });
+    };
 
     let socket = UdpSocket::bind(&args.listen)
         .with_context(|| format!("binding UDP socket on {}", args.listen))?;
-    tracing::info!("listening on {}", args.listen);
-
-    let http_listener = if let Some(http_listen) = args.http_listen.as_deref() {
-        let http_addr = resolve_socket_addr(http_listen)?;
-        let listener = TcpListener::bind(http_addr)
-            .with_context(|| format!("binding HTTP calibration server on {http_addr}"))?;
-        listener
-            .set_nonblocking(true)
-            .context("setting HTTP listener nonblocking")?;
-        tracing::info!("http calibration listening on {}", http_addr);
-        Some((http_addr, listener))
-    } else {
-        None
-    };
-
     socket
         .set_nonblocking(true)
         .context("setting UDP socket nonblocking")?;
+    let socket = Arc::new(socket);
+    tracing::info!("listening on {}", args.listen);
 
-    run_event_loop(&socket, http_listener.as_ref(), &shared)
+    if let Some(http_listen) = args.http_listen.as_deref() {
+        let http_addr = resolve_socket_addr(http_listen)?;
+        let listener = TcpListener::bind(http_addr)
+            .with_context(|| format!("binding HTTP calibration server on {http_addr}"))?;
+        tracing::info!("http calibration listening on {}", http_addr);
+        let http_queue = queue.clone();
+        let http_audio = audio.clone();
+        let http_socket = Arc::clone(&socket);
+        thread::spawn(move || {
+            if let Err(err) =
+                run_http_listener(listener, http_addr, http_queue, http_audio, http_socket)
+            {
+                tracing::error!(%http_addr, error = %err, "http listener exited");
+            }
+        });
+    }
+
+    let udp_queue = queue.clone();
+    let udp_socket = Arc::clone(&socket);
+    thread::spawn(move || {
+        if let Err(err) = run_udp_listener(udp_socket, udp_queue) {
+            tracing::error!(error = %err, "udp listener exited");
+        }
+    });
+
+    let worker_queue = queue.clone();
+    thread::spawn(move || run_synthesis_worker(worker_queue, worker_state));
+
+    let _keep_audio_stream_alive = audio_output;
+    loop {
+        thread::park();
+    }
 }
 
 fn resolve_socket_addr(spec: &str) -> Result<SocketAddr> {
@@ -132,13 +152,36 @@ fn resolve_socket_addr(spec: &str) -> Result<SocketAddr> {
         .ok_or_else(|| anyhow::anyhow!("no socket addresses for {spec}"))
 }
 
-struct SharedState {
+struct WorkerState {
     model: Arc<Kokoro>,
     voice: PathBuf,
-    audio: Arc<StreamingAudioOutput>,
+    audio: StreamingAudioHandle,
     save_wav_dir: Option<PathBuf>,
     speed: f64,
     verbose: bool,
+}
+
+#[derive(Clone)]
+struct SynthQueue {
+    inner: Arc<(Mutex<SynthQueueState>, Condvar)>,
+}
+
+struct SynthQueueState {
+    pending: VecDeque<SynthRequest>,
+    generation: u64,
+}
+
+#[derive(Debug)]
+struct SynthRequest {
+    text: String,
+    source: SynthSource,
+    generation: u64,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum SynthSource {
+    Udp { peer: SocketAddr },
+    HttpCalibrate,
 }
 
 #[derive(Debug)]
@@ -152,36 +195,79 @@ struct ProcessReceipt {
     saved_path: Option<PathBuf>,
 }
 
-fn run_event_loop(
-    udp_socket: &UdpSocket,
-    http_listener: Option<&(SocketAddr, TcpListener)>,
-    shared: &SharedState,
-) -> Result<()> {
+impl SynthQueue {
+    fn new() -> Self {
+        Self {
+            inner: Arc::new((
+                Mutex::new(SynthQueueState {
+                    pending: VecDeque::new(),
+                    generation: 0,
+                }),
+                Condvar::new(),
+            )),
+        }
+    }
+
+    fn push(&self, text: String, source: SynthSource) {
+        let (lock, cvar) = &*self.inner;
+        let mut guard = lock.lock().expect("synth queue mutex poisoned");
+        let generation = guard.generation;
+        guard.pending.push_back(SynthRequest {
+            text,
+            source,
+            generation,
+        });
+        cvar.notify_one();
+    }
+
+    fn pop(&self) -> SynthRequest {
+        let (lock, cvar) = &*self.inner;
+        let mut guard = lock.lock().expect("synth queue mutex poisoned");
+        loop {
+            if let Some(request) = guard.pending.pop_front() {
+                return request;
+            }
+            guard = cvar.wait(guard).expect("synth queue mutex poisoned");
+        }
+    }
+
+    fn flush_pending(&self) -> usize {
+        let (lock, _cvar) = &*self.inner;
+        let mut guard = lock.lock().expect("synth queue mutex poisoned");
+        let drained = guard.pending.len();
+        guard.pending.clear();
+        guard.generation = guard.generation.wrapping_add(1);
+        drained
+    }
+
+    fn generation(&self) -> u64 {
+        let (lock, _cvar) = &*self.inner;
+        lock.lock().expect("synth queue mutex poisoned").generation
+    }
+
+    fn is_current(&self, generation: u64) -> bool {
+        self.generation() == generation
+    }
+
+    fn try_if_current<T>(
+        &self,
+        generation: u64,
+        f: impl FnOnce() -> Result<T>,
+    ) -> Result<Option<T>> {
+        let (lock, _cvar) = &*self.inner;
+        let guard = lock.lock().expect("synth queue mutex poisoned");
+        if guard.generation != generation {
+            return Ok(None);
+        }
+        let result = f()?;
+        Ok(Some(result))
+    }
+}
+
+fn run_udp_listener(socket: Arc<UdpSocket>, queue: SynthQueue) -> Result<()> {
     let mut udp_buf = [0u8; 8192];
     loop {
-        if let Some((http_addr, listener)) = http_listener {
-            loop {
-                match listener.accept() {
-                    Ok((mut stream, peer)) => {
-                        if let Err(err) = handle_http_stream(&mut stream, shared, udp_socket) {
-                            tracing::warn!(
-                                %http_addr,
-                                %peer,
-                                error = %err,
-                                "http calibration request failed"
-                            );
-                        }
-                    }
-                    Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => break,
-                    Err(err) => {
-                        tracing::warn!(%http_addr, error = %err, "http calibration accept failed");
-                        break;
-                    }
-                }
-            }
-        }
-
-        match udp_socket.recv_from(&mut udp_buf) {
+        match socket.recv_from(&mut udp_buf) {
             Ok((len, peer)) => {
                 let text = std::str::from_utf8(&udp_buf[..len])
                     .context("decoding UTF-8 datagram")?
@@ -193,25 +279,7 @@ fn run_event_loop(
                 }
 
                 tracing::info!(%peer, text = %text, "received datagram");
-                let receipt = process_phrase(shared, &text)?;
-                tracing::info!(
-                    %peer,
-                    synth_ms = receipt.synth_ms,
-                    samples = receipt.samples,
-                    reference_packets = receipt.reference_packets,
-                    reference_bytes = receipt.reference_bytes,
-                    queued_ms = receipt.queued_ms,
-                    save_path = %receipt
-                        .saved_path
-                        .as_ref()
-                        .map(|p| p.display().to_string())
-                        .unwrap_or_default(),
-                    "processed datagram"
-                );
-                if let Some(path) = &receipt.saved_path {
-                    tracing::info!(saved = %path.display(), "saved wav");
-                }
-                log_reference_queue(&receipt);
+                queue.push(text, SynthSource::Udp { peer });
             }
             Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
                 std::thread::sleep(Duration::from_millis(10));
@@ -221,49 +289,188 @@ fn run_event_loop(
     }
 }
 
-fn process_phrase(shared: &SharedState, text: &str) -> Result<ProcessReceipt> {
+fn run_http_listener(
+    listener: TcpListener,
+    http_addr: SocketAddr,
+    queue: SynthQueue,
+    audio: StreamingAudioHandle,
+    udp_socket: Arc<UdpSocket>,
+) -> Result<()> {
+    loop {
+        match listener.accept() {
+            Ok((mut stream, peer)) => {
+                if let Err(err) = handle_http_stream(&mut stream, &queue, &audio, &udp_socket) {
+                    tracing::warn!(
+                        %http_addr,
+                        %peer,
+                        error = %err,
+                        "http request failed"
+                    );
+                }
+            }
+            Err(err) => tracing::warn!(%http_addr, error = %err, "http accept failed"),
+        }
+    }
+}
+
+fn run_synthesis_worker(queue: SynthQueue, state: WorkerState) {
+    loop {
+        let request = queue.pop();
+        match synthesize_phrase(&state, &request.text) {
+            Ok(synthesized) => {
+                if !queue.is_current(request.generation) {
+                    tracing::info!(
+                        text = %request.text,
+                        "dropping synthesized audio invalidated by flush"
+                    );
+                    continue;
+                }
+                let receipt = match enqueue_synthesized_phrase(
+                    &queue,
+                    request.generation,
+                    &state,
+                    &synthesized,
+                ) {
+                    Ok(Some(receipt)) => receipt,
+                    Ok(None) => {
+                        tracing::info!(
+                            text = %request.text,
+                            "dropping synthesized audio invalidated by flush"
+                        );
+                        continue;
+                    }
+                    Err(err) => {
+                        tracing::warn!(error = %err, "synthesis enqueue failed");
+                        continue;
+                    }
+                };
+                log_processed_request(&request, &receipt);
+            }
+            Err(err) => {
+                tracing::warn!(
+                    source = ?request.source,
+                    text = %request.text,
+                    error = %err,
+                    "synthesis failed"
+                );
+            }
+        }
+    }
+}
+
+struct SynthesizedPhrase {
+    samples: Vec<f32>,
+    receipt: ProcessReceipt,
+}
+
+fn synthesize_phrase(state: &WorkerState, text: &str) -> Result<SynthesizedPhrase> {
     let phonemizer = TwoTierPhonemizer;
     let synth_start = std::time::Instant::now();
     let samples = synthesize_text(
-        shared.model.as_ref(),
+        state.model.as_ref(),
         &phonemizer,
         text,
-        &shared.voice,
-        shared.speed,
+        &state.voice,
+        state.speed,
         &Device::Cpu,
-        shared.verbose,
+        state.verbose,
     )?;
     let synth_elapsed = synth_start.elapsed();
 
     let (samples, _scale) = soft_normalize(&samples);
-    let saved_path = if let Some(dir) = &shared.save_wav_dir {
+    Ok(SynthesizedPhrase {
+        receipt: ProcessReceipt {
+            synth_ms: synth_elapsed.as_millis(),
+            samples: samples.len(),
+            reference_packets: 0,
+            reference_bytes: 0,
+            reference_duration_seconds: 0.0,
+            queued_ms: samples.len() * 1_000 / 24_000,
+            saved_path: None,
+        },
+        samples,
+    })
+}
+
+fn enqueue_synthesized_phrase(
+    queue: &SynthQueue,
+    generation: u64,
+    state: &WorkerState,
+    synthesized: &SynthesizedPhrase,
+) -> Result<Option<ProcessReceipt>> {
+    let receipt = &synthesized.receipt;
+    let saved_path = if let Some(dir) = &state.save_wav_dir {
         fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
         let path = dir.join(timestamped_wav_name(std::time::SystemTime::now()));
-        write_wav(&samples, &path)?;
+        write_wav(&synthesized.samples, &path)?;
         Some(path)
     } else {
         None
     };
 
-    let reference_receipt = shared
-        .audio
-        .enqueue_samples_with_reference(&samples, 24_000, SILENCE_PADDING_SAMPLES)
-        .context("queueing playback")?;
-
-    Ok(ProcessReceipt {
-        synth_ms: synth_elapsed.as_millis(),
-        samples: samples.len(),
+    let reference_receipt = match queue.try_if_current(generation, || {
+        state
+            .audio
+            .enqueue_samples_with_reference(&synthesized.samples, 24_000, SILENCE_PADDING_SAMPLES)
+            .context("queueing playback")
+    })? {
+        Some(receipt) => receipt,
+        None => return Ok(None),
+    };
+    let updated = ProcessReceipt {
+        synth_ms: receipt.synth_ms,
+        samples: receipt.samples,
         reference_packets: reference_receipt.packets,
         reference_bytes: reference_receipt.bytes,
         reference_duration_seconds: reference_receipt.duration_seconds,
-        queued_ms: samples.len() * 1_000 / 24_000,
+        queued_ms: receipt.queued_ms,
         saved_path,
-    })
+    };
+    log_reference_queue(&updated);
+    if let Some(path) = &updated.saved_path {
+        tracing::info!(saved = %path.display(), "saved wav");
+    }
+    Ok(Some(updated))
+}
+
+fn log_processed_request(request: &SynthRequest, receipt: &ProcessReceipt) {
+    match request.source {
+        SynthSource::Udp { peer } => {
+            tracing::info!(
+                %peer,
+                synth_ms = receipt.synth_ms,
+                samples = receipt.samples,
+                reference_packets = receipt.reference_packets,
+                reference_bytes = receipt.reference_bytes,
+                queued_ms = receipt.queued_ms,
+                save_path = %receipt
+                    .saved_path
+                    .as_ref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_default(),
+                "processed datagram"
+            );
+        }
+        SynthSource::HttpCalibrate => {
+            tracing::info!(
+                http = true,
+                text = %request.text,
+                synth_ms = receipt.synth_ms,
+                samples = receipt.samples,
+                reference_packets = receipt.reference_packets,
+                reference_bytes = receipt.reference_bytes,
+                reference_duration_seconds = receipt.reference_duration_seconds,
+                queued_ms = receipt.queued_ms,
+                "processed calibration"
+            );
+        }
+    }
 }
 
 fn handle_http_stream(
     stream: &mut TcpStream,
-    shared: &SharedState,
+    queue: &SynthQueue,
+    audio: &StreamingAudioHandle,
     udp_socket: &UdpSocket,
 ) -> Result<()> {
     stream
@@ -308,13 +515,12 @@ fn handle_http_stream(
     }
 
     if path == "/flush" {
-        shared
-            .audio
-            .flush_queue()
-            .context("flushing playback queue")?;
+        let drained_requests = queue.flush_pending();
+        audio.flush_queue().context("flushing playback queue")?;
         let drained =
             drain_pending_datagrams(udp_socket).context("draining pending UDP datagrams")?;
         tracing::info!(
+            drained_requests,
             drained_datagrams = drained,
             "queue flushed (drained pending datagrams from UDP socket)"
         );
@@ -349,22 +555,7 @@ fn handle_http_stream(
             .unwrap_or_else(|| "Recognition ready.".to_string())
     };
 
-    let receipt = process_phrase(shared, &phrase)?;
-    tracing::info!(
-        http = true,
-        text = %phrase,
-        synth_ms = receipt.synth_ms,
-        samples = receipt.samples,
-        reference_packets = receipt.reference_packets,
-        reference_bytes = receipt.reference_bytes,
-        reference_duration_seconds = receipt.reference_duration_seconds,
-        queued_ms = receipt.queued_ms,
-        "processed calibration"
-    );
-    if let Some(path) = &receipt.saved_path {
-        tracing::info!(saved = %path.display(), "saved wav");
-    }
-    log_reference_queue(&receipt);
+    queue.push(phrase, SynthSource::HttpCalibrate);
     write_http_response(stream, 200, "ok")?;
     Ok(())
 }

@@ -93,9 +93,14 @@ pub fn play_samples(samples: &[f32], sample_rate: u32) -> Result<()> {
 }
 
 pub struct StreamingAudioOutput {
+    handle: StreamingAudioHandle,
+    _stream: Stream,
+}
+
+#[derive(Clone)]
+pub struct StreamingAudioHandle {
     output_sample_rate: u32,
     state: Arc<Mutex<StreamingState>>,
-    _stream: Stream,
 }
 
 struct StreamingState {
@@ -142,6 +147,10 @@ impl StreamingAudioOutput {
             reference,
             error: None,
         }));
+        let handle = StreamingAudioHandle {
+            output_sample_rate,
+            state: state.clone(),
+        };
         let channels = config.channels() as usize;
         let stream_config = config.config();
         let stream = match config.sample_format() {
@@ -158,12 +167,42 @@ impl StreamingAudioOutput {
         };
         stream.play().context("starting output stream")?;
         Ok(Self {
-            output_sample_rate,
-            state,
+            handle,
             _stream: stream,
         })
     }
 
+    pub fn handle(&self) -> StreamingAudioHandle {
+        self.handle.clone()
+    }
+
+    pub fn enqueue_samples(&self, samples: &[f32], input_sample_rate: u32) -> Result<()> {
+        self.handle.enqueue_samples(samples, input_sample_rate)
+    }
+
+    pub fn enqueue_samples_with_reference(
+        &self,
+        samples: &[f32],
+        input_sample_rate: u32,
+        trailing_silence_samples: usize,
+    ) -> Result<ReferenceQueueReceipt> {
+        self.handle.enqueue_samples_with_reference(
+            samples,
+            input_sample_rate,
+            trailing_silence_samples,
+        )
+    }
+
+    pub fn enqueue_silence(&self, duration_samples: usize) -> Result<()> {
+        self.handle.enqueue_silence(duration_samples)
+    }
+
+    pub fn flush_queue(&self) -> Result<()> {
+        self.handle.flush_queue()
+    }
+}
+
+impl StreamingAudioHandle {
     pub fn enqueue_samples(&self, samples: &[f32], input_sample_rate: u32) -> Result<()> {
         self.check_error()?;
         if samples.is_empty() {
