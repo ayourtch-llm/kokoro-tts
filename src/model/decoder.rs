@@ -3,7 +3,7 @@
 use candle_core::{Result, Tensor};
 use candle_nn::{Module, VarBuilder};
 
-fn fold_weight_norm_conv1d(
+pub fn fold_weight_norm_conv1d(
     in_channels: usize,
     out_channels: usize,
     kernel_size: usize,
@@ -45,7 +45,7 @@ fn fold_weight_norm_conv1d(
     Ok(candle_nn::Conv1d::new(weight, bias, cfg))
 }
 
-fn fold_weight_norm_conv_transpose1d(
+pub fn fold_weight_norm_conv_transpose1d(
     in_channels: usize,
     out_channels: usize,
     kernel_size: usize,
