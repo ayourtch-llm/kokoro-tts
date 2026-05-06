@@ -63,64 +63,88 @@ Dump the vocab keys at startup in the new phonemizer impl and assert the ARPAbet
 
 Each stage is its own commit. Each ships value on its own — don't conflate. Validation receipts go in §10 as they land.
 
-### Stage 1 — CMUdict lexicon + ARPAbet → IPA mapping
+### Stage 1 — Misaki gold lexicon + CMUdict fallback (architecture revised after empirical findings)
 
-**Goal:** lookup-only G2P. Words in CMUdict → correct IPA. OOV words: warn and emit best-effort character-by-character (literal letters into IPA), to be replaced by stage 5.
+**Goal:** lookup-only G2P with two tiers. Most common English words → bit-exact misaki IPA; long-tail words → CMUdict-derived IPA via ARPAbet. OOV → stage 5 fallback.
+
+**Architecture revision (from codex's stage-1 sanity dump against actual misaki output):**
+
+The original draft of this stage was "CMUdict + ARPAbet→IPA mapping." Codex ran a misaki sanity dump and found two things that reshape stage 1:
+
+1. **Misaki's `us_gold.json` lexicon (~13k words) is already in IPA** in *exactly* the form Kokoro was trained on. Going `CMUdict → ARPAbet → IPA` is lossy at the conversion step (multiple ARPAbet symbols map to the same or near-IPA, conventions differ); going `misaki-gold → IPA` is identity. Top-13k English words cover roughly 93–95% of running text.
+2. **Misaki strips length marks (`ː`) and uses ligature affricates (`ʧ`, `ʤ`) in US English**, contrary to the espeak en-us convention the original spec table was based on. Bit-matching misaki is what the trained model expects.
+
+**New stage-1 lookup order:**
+
+```
+1. Strip casing + ASCII-normalize → key
+2. Try misaki gold lexicon (data/misaki_us_gold.json, ~13k entries, IPA-already)
+   ├─ hit:  return IPA verbatim
+   └─ miss: ↓
+3. Try CMUdict (data/cmudict-0.7b, ~134k entries, ARPAbet)
+   ├─ hit:  ARPAbet → IPA via the table below, return
+   └─ miss: ↓
+4. Stage-5 OOV fallback (literal spellout in 5a; LTS rules in 5b)
+```
 
 Files:
-- `data/cmudict-0.7b` (or latest; ~3.6 MB plain text). Embed via `include_str!` so the binary is self-contained. Strip comments + alternative-pronunciation lines (those ending with `(2)`, `(3)`) to keep just the canonical pronunciation per word — or keep all and pick the first as default; defer alternative-pronunciation routing to stage 4 (homograph).
-- `src/phonemizer/lexicon.rs` — parses CMUdict at first call (lazy_static or OnceLock), stores `HashMap<String, Vec<ArpaPhone>>`.
-- `src/phonemizer/arpabet.rs` — fixed table mapping ARPAbet → IPA. ~40 entries. **Critical detail:** stress mark goes BEFORE the vowel of the stressed syllable, not after. CMUdict marks the stressed vowel (e.g., "OW1"); when emitting, prepend `ˈ` or `ˌ` to the IPA vowel.
+- `data/misaki_us_gold.json` — copy from misaki upstream (Apache 2.0, vendor freely). Embed via `include_str!`. Parse once at first phonemize call into `HashMap<String, String>`.
+- `data/cmudict-0.7b` (~3.6 MB). Embed via `include_str!`. Strip comments + alternative-pronunciation lines (those ending with `(2)`, `(3)`) — keep first per word as default; defer routing to stage 4.
+- `src/phonemizer/lexicon.rs` — both lexicons + the lookup-order glue.
+- `src/phonemizer/arpabet.rs` — ARPAbet → IPA table for the CMUdict fallback path. ~40 entries.
 
-ARPAbet → IPA mapping (American English, matching Kokoro vocab):
+**ARPAbet → IPA mapping (US English, MATCHING MISAKI — verified empirically by codex stage-1 sanity dump):**
+
+Table updated from the earlier draft per misaki's actual emission pattern. **No length marks. Affricates as ligatures.**
 
 | ARPA | IPA (unstressed / stressed) | ARPA | IPA |
 |---|---|---|---|
-| **Long vowels (length mark `ː` ONLY when stressed):** | | | |
-| AA | ɑ / ˈɑː / ˌɑː | IY | i / ˈiː / ˌiː |
-| AO | ɔ / ˈɔː / ˌɔː | UW | u / ˈuː / ˌuː |
-| ER | ɚ / ˈɜː / ˌɜː | | |
-| **AH (vowel-quality split, not length):** | | | |
+| **Long vowels (NO length mark `ː` in US misaki — stress mark only):** | | | |
+| AA | ɑ / ˈɑ / ˌɑ | IY | i / ˈi / ˌi |
+| AO | ɔ / ˈɔ / ˌɔ | UW | u / ˈu / ˌu |
+| **AH (vowel-quality split per stress):** | | | |
 | AH | ə (unstressed) / ˈʌ / ˌʌ | | |
-| **Short vowels (no length, stress mark only):** | | | |
+| **ER (vowel-quality split per stress, see note):** | | | |
+| ER | əɹ (unstressed) / ˈɜɹ / ˌɜɹ | | |
+| **Short vowels (stress mark only):** | | | |
 | AE | æ | IH | ɪ |
 | EH | ɛ | UH | ʊ |
-| **Diphthongs (two IPA chars; stress mark prepended to both):** | | | |
+| **Diphthongs (two IPA chars; stress mark prepended to first vowel):** | | | |
 | AW | aʊ | OW | oʊ |
 | AY | aɪ | OY | ɔɪ |
 | EY | eɪ | | |
-| **Consonants (stress-invariant):** | | | |
+| **Consonants (stress-invariant; affricates as LIGATURES):** | | | |
 | B | b | N | n |
-| CH | tʃ | NG | ŋ |
+| CH | **ʧ** (ligature, U+02A7) | NG | ŋ |
 | D | d | P | p |
 | DH | ð | R | ɹ |
 | F | f | S | s |
 | G | ɡ | SH | ʃ |
 | HH | h | T | t |
-| JH | dʒ | TH | θ |
+| JH | **ʤ** (ligature, U+02A4) | TH | θ |
 | K | k | V | v |
 | L | l | W | w |
 | M | m | Y | j |
 | (silence) | (space) | Z | z |
 | | | ZH | ʒ |
 
-**Notes (corrected from earlier draft — verified against Kokoro vocab + espeak-ng en-us convention):**
+**Notes (verified against misaki US output by codex's stage-1 sanity dump):**
 
-- **Five long vowels** (AA, AO, ER, IY, UW) carry a length mark `ː` *only when stressed*. Earlier table only noted this for ER; the same rule applies to AA/AO/IY/UW. Verify with espeak-ng en-us: "speed" = `spˈiːd`, "father" = `fˈɑːðɚ`, "thought" = `θˈɔːt`, "treaty" = `tɹˈiːti`, "ready" = `ɹˈɛdi` (unstressed IY0 = `i`, no length).
-- **AH is special** — vowel quality changes with stress (`ʌ` ↔ `ə`), not just length. AH0 → ə, AH1 → ˈʌ, AH2 → ˌʌ.
-- **ER is also special** — vowel quality changes with stress (`ɜː` ↔ `ɚ`). ER0 → ɚ, ER1 → ˈɜː, ER2 → ˌɜː.
-- **Affricate form choice (`tʃ` vs `ʧ`):** both two-char (`d`+`ʒ`, `t`+`ʃ`) AND single-char ligatures (`ʤ`, `ʧ`) exist in Kokoro's vocab (verified). The model can probably accept either since both have learned embeddings, but **pick one consistent form and document it in the lexicon module**. Recommend two-char (`tʃ`, `dʒ`) as the modern IPA convention and what misaki uses upstream — but the first thing stage 1 should do is run misaki on a few canned words and check which form it emits, then match. If misaki emits ligatures, switch to ligatures.
-- **Stress mark placement**: `ˈ`/`ˌ` immediately precedes the IPA vowel (or the first vowel of a diphthong), not the consonant cluster. CMUdict marks the stressed *vowel* (AA1, IY2, etc.); when emitting, prepend the stress char to the vowel's IPA, not to the syllable onset.
-- **First validation step in stage 1:** before writing any test data, run misaki + espeak-ng on a 5-word sanity set ("speed father thought ready treaty") and dump the IPA. Use that to verify the table above and pick the affricate convention. Cheap, gates everything else.
+- **No length marks `ː` in US English mode.** Misaki emits "speed" = `spˈid` (not `spˈiːd`), "father" = `fˈɑðəɹ`, "thought" = `θˈɔt`. The earlier draft of this spec said long vowels carry `ː` when stressed — that's the espeak `--ipa=3` convention but NOT misaki's US convention. Drop the length mark for US. (Length mark is in Kokoro's vocab so synthesis won't break either way, but matching the training distribution is safer.)
+- **Affricates as ligatures (`ʧ` U+02A7, `ʤ` U+02A4), not two-char.** Misaki emits "church" = `ʧˈɜɹʧ` and "judge" = `ʤˈʌʤ`. Both forms are in Kokoro's vocab; ligatures match what the model saw at training. The earlier draft recommended two-char — wrong; corrected.
+- **AH stays special** — vowel quality changes with stress (`ʌ` ↔ `ə`), not length. AH0 → ə, AH1 → ˈʌ, AH2 → ˌʌ.
+- **ER renders as a vowel + r split**, not the `ɚ`/`ɜː` ligatures. Misaki emits "father" = `fˈɑðəɹ` (ending `əɹ`, not `ɚ`) and "church" = `ʧˈɜɹʧ` (using `ɜɹ`, not `ɜː`). So ER0 → `əɹ` and ER1/ER2 → `ˈɜɹ`/`ˌɜɹ`. **Verify ER0 against more misaki samples** like "teacher", "doctor", "mother" — if misaki uses `ɚ` for some of them, the rule may be word-specific (some unstressed ERs collapse to `ɚ`, others split to `əɹ`). Codex: dump 10 misaki ER words and pick the dominant form, document edge cases.
+- **Stress mark placement**: `ˈ`/`ˌ` immediately precedes the IPA vowel (or the first vowel of a diphthong), not the consonant cluster. CMUdict marks the stressed *vowel* (AA1, IY2, etc.); when emitting, prepend the stress char to the vowel's IPA.
+- **The misaki gold path bypasses this table entirely.** ARPAbet→IPA is only exercised when CMUdict is hit but misaki isn't — i.e., the long tail. So the table's correctness matters for less-common words, but the *common* case (top-13k) is bit-exact regardless of table edge cases.
 
-Punctuation: pass `, . ! ? ; :` through unchanged. Drop other punctuation. Insert space between successive words (already present in CMUdict tokenization).
+Punctuation: pass `, . ! ? ; :` through unchanged. Drop other punctuation (except curly quotes / em-dashes / ellipses which are in vocab — pass through, let the model handle). Insert space between successive words.
 
 **Validation:**
-- `tools/reference_phonemize_lexicon.py` — uses Python `phonemizer` library (espeak en-us backend) on a curated test set of ~50 common, in-CMUdict words. Dumps expected IPA per word.
-- `src/bin/lexicon_check.rs` — runs new Rust phonemizer on same test set, diffs char-by-char per word. Target: 100% match for in-CMUdict words. (Espeak and CMUdict diverge on a few words — for those, treat CMUdict as truth and document in test data with a `# espeak-disagrees` comment.)
-- `cargo test` should include a smoke test: phonemize "hello world" → matches `MILESTONE_TEST_PHONEMES` exactly.
+- `tools/reference_phonemize_lexicon.py` — generates expected IPA from misaki directly (since it's our gold standard) plus phonemizer/espeak as a secondary reference for OOV-from-misaki words. Curated test set of ~50 common in-misaki words + ~30 misaki-OOV-but-CMUdict-hit words.
+- `src/bin/lexicon_check.rs` — runs Rust phonemizer on the test set; for misaki-hit words target is **100% bit-exact match**, for CMUdict-fallback words target is ≥95% character-level match (some minor ARPAbet-conversion divergence is acceptable since misaki itself is the gold).
+- `cargo test` smoke test: phonemize "hello world" → must match `MILESTONE_TEST_PHONEMES` exactly. The existing constant `"həlˈoʊ wˈɜɹld"` was verified end-to-end at milestone 1 and ASR-validated; if misaki's emission differs, **update `MILESTONE_TEST_PHONEMES` to match misaki and re-run the kokoro-tts speak test** before relying on the new value. (The model is robust enough to accept slight variants, but the constant is the contract.)
 
-**Commit message:** `g2p stage 1: CMUdict lookup + ARPAbet→IPA`
+**Commit message:** `g2p stage 1: misaki gold + CMUdict fallback + ARPAbet→IPA`
 
 ### Stage 2 — Punctuation, sentence boundaries, prosody
 
