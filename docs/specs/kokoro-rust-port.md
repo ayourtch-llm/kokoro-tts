@@ -2,7 +2,8 @@
 
 **Audience:** the implementing instance (codex / pty-10).
 **Reviewers:** pty-1 (voice-agent integrator) and the Claude instance in this repo.
-**Status at handoff:** scaffold exists, does not compile, no end-to-end path. Zero commits.
+**Status at handoff (2026-05-06 00:08):** scaffold exists, does not compile, no end-to-end path. Zero commits.
+**Status at milestone 1 (2026-05-06 04:29):** ✅ **ACHIEVED.** All 12 stages green; `cargo run --release --bin speak` produces a 24 kHz mono WAV from "hello world"; nemotron-speech ASR round-trips the output to "Hello world." Audio intelligible end-to-end. See §9 stage-12 row.
 
 ## 1. Goal
 
