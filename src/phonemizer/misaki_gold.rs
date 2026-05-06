@@ -1,0 +1,55 @@
+#![allow(dead_code)]
+
+use serde_json::Value;
+use std::collections::HashMap;
+use std::sync::OnceLock;
+
+pub struct MisakiGoldLexicon {
+    entries: HashMap<String, String>,
+}
+
+static LEXICON: OnceLock<MisakiGoldLexicon> = OnceLock::new();
+
+pub fn lexicon() -> &'static MisakiGoldLexicon {
+    LEXICON.get_or_init(MisakiGoldLexicon::load)
+}
+
+impl MisakiGoldLexicon {
+    fn load() -> Self {
+        let source = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/data/misaki-us-gold.json"
+        ));
+        let value: Value = serde_json::from_str(source).expect("valid misaki gold json");
+        let obj = value.as_object().expect("misaki gold json object");
+        let mut entries = HashMap::with_capacity(obj.len() * 2);
+        for (key, value) in obj {
+            if let Some(ipa) = flatten_value(value) {
+                entries.insert(key.clone(), ipa.clone());
+                entries
+                    .entry(key.to_ascii_lowercase())
+                    .or_insert_with(|| ipa.clone());
+            }
+        }
+        Self { entries }
+    }
+
+    pub fn lookup(&self, word: &str) -> Option<&str> {
+        self.entries
+            .get(word)
+            .map(String::as_str)
+            .or_else(|| self.entries.get(&word.to_ascii_lowercase()).map(String::as_str))
+    }
+}
+
+fn flatten_value(value: &Value) -> Option<String> {
+    match value {
+        Value::String(s) => Some(s.clone()),
+        Value::Object(map) => map
+            .get("DEFAULT")
+            .and_then(|v| v.as_str())
+            .map(str::to_owned)
+            .or_else(|| map.values().find_map(|v| v.as_str().map(str::to_owned))),
+        _ => None,
+    }
+}

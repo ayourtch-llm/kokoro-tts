@@ -3,7 +3,7 @@
 use anyhow::{bail, Result};
 
 pub const MILESTONE_TEST_PHRASE: &str = "hello world";
-pub const MILESTONE_TEST_PHONEMES: &str = "həlˈoʊ wˈɜːld";
+pub const MILESTONE_TEST_PHONEMES: &str = "həlˈO wˈɜɹld";
 
 pub trait Phonemizer: Send + Sync {
     fn phonemize(&self, text: &str) -> Result<String>;
@@ -26,13 +26,15 @@ impl Phonemizer for StubPhonemizer {
 }
 
 mod arpabet;
+mod misaki_gold;
 mod lexicon;
 
 #[derive(Debug, Default, Clone, Copy)]
-pub struct CmudictPhonemizer;
+pub struct TwoTierPhonemizer;
 
-impl Phonemizer for CmudictPhonemizer {
+impl Phonemizer for TwoTierPhonemizer {
     fn phonemize(&self, text: &str) -> Result<String> {
+        let gold = misaki_gold::lexicon();
         let lexicon = lexicon::lexicon();
         let mut out = String::new();
         for token in tokenize(text) {
@@ -41,9 +43,10 @@ impl Phonemizer for CmudictPhonemizer {
                     if needs_space_before_word(&out) {
                         out.push(' ');
                     }
-                    let ipa = lexicon
+                    let ipa = gold
                         .lookup(&word)
-                        .map(arpabet::phones_to_ipa)
+                        .map(str::to_owned)
+                        .or_else(|| lexicon.lookup(&word).map(arpabet::phones_to_ipa))
                         .unwrap_or_else(|| spell_out_word(&word));
                     out.push_str(&ipa);
                 }
@@ -156,7 +159,7 @@ fn spell_out_word(word: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{CmudictPhonemizer, Phonemizer, StubPhonemizer, MILESTONE_TEST_PHONEMES};
+    use super::{Phonemizer, StubPhonemizer, TwoTierPhonemizer, MILESTONE_TEST_PHONEMES};
 
     #[test]
     fn stub_returns_canned_ipa_for_milestone_phrase() {
@@ -172,9 +175,9 @@ mod tests {
     }
 
     #[test]
-    fn cmudict_returns_canned_ipa_for_milestone_phrase() {
+    fn two_tier_returns_canned_ipa_for_milestone_phrase() {
         assert_eq!(
-            CmudictPhonemizer.phonemize("hello world").unwrap(),
+            TwoTierPhonemizer.phonemize("hello world").unwrap(),
             MILESTONE_TEST_PHONEMES
         );
     }

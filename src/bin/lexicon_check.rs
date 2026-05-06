@@ -1,7 +1,7 @@
 //! Validate stage-1 CMUdict phonemizer against `tools/reference_phonemize_lexicon.py`.
 
 use anyhow::{bail, Context, Result};
-use kokoro_tts::phonemizer::{CmudictPhonemizer, Phonemizer};
+use kokoro_tts::phonemizer::{Phonemizer, TwoTierPhonemizer};
 use std::path::PathBuf;
 
 #[derive(Debug)]
@@ -33,7 +33,7 @@ fn main() -> Result<()> {
     let args = Args::parse()?;
     let reference = std::fs::read_to_string(&args.reference)
         .with_context(|| format!("reading {}", args.reference.display()))?;
-    let phonemizer = CmudictPhonemizer;
+    let phonemizer = TwoTierPhonemizer;
     let mut n = 0usize;
     for line in reference.lines() {
         if line.trim().is_empty() {

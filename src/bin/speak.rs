@@ -3,7 +3,7 @@
 use anyhow::{bail, Context, Result};
 use candle_core::{DType, Device};
 use kokoro_tts::model::Kokoro;
-use kokoro_tts::phonemizer::{CmudictPhonemizer, Phonemizer, MILESTONE_TEST_PHONEMES};
+use kokoro_tts::phonemizer::{Phonemizer, TwoTierPhonemizer, MILESTONE_TEST_PHONEMES};
 use std::path::PathBuf;
 
 #[derive(Debug)]
@@ -53,7 +53,7 @@ fn main() -> Result<()> {
 
     let phonemes = match (&args.phonemes, &args.text) {
         (Some(p), _) => p.clone(),
-        (None, Some(t)) => CmudictPhonemizer
+        (None, Some(t)) => TwoTierPhonemizer
             .phonemize(t)
             .with_context(|| format!("phonemizing {:?}", t))?,
         (None, None) => MILESTONE_TEST_PHONEMES.to_string(),
