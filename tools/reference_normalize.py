@@ -107,6 +107,32 @@ CASES = [
     "5mm",
     "5 °F",
     "3 m",
+    "2 + 2 = 4",
+    "5 - 3",
+    "5-3",
+    "2*3",
+    "2 * 3",
+    "10/2",
+    "8 / 2",
+    "x^2",
+    "a <= b",
+    "a >= b",
+    "a < b",
+    "a > b",
+    "3×4",
+    "8÷2",
+    "x≠y",
+    "x≤y",
+    "x≥y",
+    "10 ± 2",
+    "50%",
+    "text-to-speech",
+    "**bold**",
+    "a*b",
+    "5/6",
+    "5/6/2026",
+    "C++",
+    "The result is 2 + 2 = 4.",
 ]
 
 UNITS = [
@@ -149,6 +175,7 @@ TENS = [
 def normalize(text: str) -> str:
     text = normalize_abbreviations(text)
     text = normalize_dates(text)
+    text = normalize_math(text)
     text = normalize_money_time(text)
     text = normalize_units(text)
     text = normalize_acronyms(text)
@@ -438,6 +465,157 @@ def normalize_acronyms(text: str) -> str:
         out.append(chars[i])
         i += 1
     return "".join(out)
+
+
+def normalize_math(text: str) -> str:
+    chars = list(text)
+    out: list[str] = []
+    i = 0
+    changed = False
+    while i < len(chars):
+        result = match_math_operator(chars, i)
+        if result is None:
+            out.append(chars[i])
+            i += 1
+        else:
+            replacement, consumed = result
+            out.append(replacement)
+            i += consumed
+            changed = True
+    text_out = "".join(out)
+    return collapse_whitespace(text_out) if changed else text_out
+
+
+def match_math_operator(chars: list[str], start: int) -> tuple[str, int] | None:
+    ch = chars[start]
+    if ch == "≤":
+        return " less than or equal to ", 1
+    if ch == "≥":
+        return " greater than or equal to ", 1
+    if ch == "≠":
+        return " not equal to ", 1
+    if ch == "×":
+        return " times ", 1
+    if ch == "÷":
+        return " divided by ", 1
+    if ch == "±":
+        return " plus or minus ", 1
+    if ch == "<" and start + 1 < len(chars) and chars[start + 1] == "=":
+        return ((" less than or equal to ", 2) if math_relational_context(chars, start, 2) else None)
+    if ch == ">" and start + 1 < len(chars) and chars[start + 1] == "=":
+        return ((" greater than or equal to ", 2) if math_relational_context(chars, start, 2) else None)
+    if ch == "+":
+        return (" plus ", 1) if math_general_context(chars, start) else None
+    if ch == "=":
+        return (" equals ", 1) if math_general_context(chars, start) else None
+    if ch == "-":
+        return (" minus ", 1) if math_digit_context(chars, start) else None
+    if ch == "*":
+        return (" times ", 1) if math_digit_context(chars, start) else None
+    if ch == "/":
+        return (" divided by ", 1) if math_slash_context(chars, start) else None
+    if ch == "^":
+        return (" to the power of ", 1) if math_exponent_context(chars, start) else None
+    if ch == "<":
+        return (" less than ", 1) if math_relational_context(chars, start, 1) else None
+    if ch == ">":
+        return (" greater than ", 1) if math_relational_context(chars, start, 1) else None
+    if ch == "%":
+        return (" percent ", 1) if math_percent_context(chars, start) else None
+    return None
+
+
+def math_general_context(chars: list[str], start: int) -> bool:
+    left = prev_non_whitespace(chars, start)
+    right = next_non_whitespace(chars, start + 1)
+    return bool(left and right and is_math_operand_char(left) and is_math_operand_char(right))
+
+
+def math_relational_context(chars: list[str], start: int, consumed: int) -> bool:
+    left = prev_non_whitespace(chars, start)
+    right = next_non_whitespace(chars, start + consumed)
+    return bool(left and right and is_math_operand_char(left) and is_math_operand_char(right))
+
+
+def math_digit_context(chars: list[str], start: int) -> bool:
+    left = prev_non_whitespace(chars, start)
+    right = next_non_whitespace(chars, start + 1)
+    return bool(left and right and left.isdigit() and right.isdigit())
+
+
+def math_exponent_context(chars: list[str], start: int) -> bool:
+    return math_general_context(chars, start)
+
+
+def math_percent_context(chars: list[str], start: int) -> bool:
+    left = prev_non_whitespace(chars, start)
+    return bool(left and left.isdigit())
+
+
+def math_slash_context(chars: list[str], start: int) -> bool:
+    left = prev_non_whitespace(chars, start)
+    right = next_non_whitespace(chars, start + 1)
+    if not (left and right and left.isdigit() and right.isdigit()):
+        return False
+    left_space = start > 0 and chars[start - 1].isspace()
+    right_space = start + 1 < len(chars) and chars[start + 1].isspace()
+    if left_space or right_space:
+        return True
+    return digit_run_left(chars, start) > 1 or digit_run_right(chars, start + 1) > 1
+
+
+def prev_non_whitespace(chars: list[str], start: int) -> str | None:
+    i = start - 1
+    while i >= 0:
+        if not chars[i].isspace():
+            return chars[i]
+        i -= 1
+    return None
+
+
+def next_non_whitespace(chars: list[str], start: int) -> str | None:
+    i = start
+    while i < len(chars):
+        if not chars[i].isspace():
+            return chars[i]
+        i += 1
+    return None
+
+
+def digit_run_left(chars: list[str], start: int) -> int:
+    count = 0
+    i = start - 1
+    while i >= 0 and chars[i].isdigit():
+        count += 1
+        i -= 1
+    return count
+
+
+def digit_run_right(chars: list[str], start: int) -> int:
+    count = 0
+    i = start
+    while i < len(chars) and chars[i].isdigit():
+        count += 1
+        i += 1
+    return count
+
+
+def is_math_operand_char(ch: str) -> bool:
+    return ch.isalnum() or ch in ")]}"
+
+
+def collapse_whitespace(text: str) -> str:
+    out: list[str] = []
+    last_was_space = False
+    for ch in text:
+        if ch.isspace():
+            if not last_was_space:
+                out.append(" ")
+                last_was_space = True
+        else:
+            out.append(ch)
+            last_was_space = False
+    return "".join(out).strip()
 
 
 def normalize_money_time(text: str) -> str:

@@ -103,6 +103,250 @@ pub fn normalize_units(text: &str) -> String {
     out
 }
 
+pub fn normalize_math(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::new();
+    let mut i = 0;
+    let mut changed = false;
+    while i < chars.len() {
+        if let Some((replacement, consumed)) = match_math_operator(&chars, i) {
+            out.push_str(&replacement);
+            i += consumed;
+            changed = true;
+        } else {
+            out.push(chars[i]);
+            i += 1;
+        }
+    }
+    if changed {
+        collapse_whitespace(&out)
+    } else {
+        out
+    }
+}
+
+fn match_math_operator(chars: &[char], start: usize) -> Option<(String, usize)> {
+    let ch = *chars.get(start)?;
+    match ch {
+        '≤' => Some((" less than or equal to ".to_string(), 1)),
+        '≥' => Some((" greater than or equal to ".to_string(), 1)),
+        '≠' => Some((" not equal to ".to_string(), 1)),
+        '×' => Some((" times ".to_string(), 1)),
+        '÷' => Some((" divided by ".to_string(), 1)),
+        '±' => Some((" plus or minus ".to_string(), 1)),
+        '<' if matches!(chars.get(start + 1), Some('=')) => {
+            if math_relational_context(chars, start, 2) {
+                Some((" less than or equal to ".to_string(), 2))
+            } else {
+                None
+            }
+        }
+        '>' if matches!(chars.get(start + 1), Some('=')) => {
+            if math_relational_context(chars, start, 2) {
+                Some((" greater than or equal to ".to_string(), 2))
+            } else {
+                None
+            }
+        }
+        '+' => {
+            if math_general_context(chars, start) {
+                Some((" plus ".to_string(), 1))
+            } else {
+                None
+            }
+        }
+        '=' => {
+            if math_general_context(chars, start) {
+                Some((" equals ".to_string(), 1))
+            } else {
+                None
+            }
+        }
+        '-' => {
+            if math_digit_context(chars, start) {
+                Some((" minus ".to_string(), 1))
+            } else {
+                None
+            }
+        }
+        '*' => {
+            if math_digit_context(chars, start) {
+                Some((" times ".to_string(), 1))
+            } else {
+                None
+            }
+        }
+        '/' => {
+            if math_slash_context(chars, start) {
+                Some((" divided by ".to_string(), 1))
+            } else {
+                None
+            }
+        }
+        '^' => {
+            if math_exponent_context(chars, start) {
+                Some((" to the power of ".to_string(), 1))
+            } else {
+                None
+            }
+        }
+        '<' => {
+            if math_relational_context(chars, start, 1) {
+                Some((" less than ".to_string(), 1))
+            } else {
+                None
+            }
+        }
+        '>' => {
+            if math_relational_context(chars, start, 1) {
+                Some((" greater than ".to_string(), 1))
+            } else {
+                None
+            }
+        }
+        '%' => {
+            if math_percent_context(chars, start) {
+                Some((" percent ".to_string(), 1))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+fn math_general_context(chars: &[char], start: usize) -> bool {
+    matches!(
+        (
+            prev_non_whitespace(chars, start),
+            next_non_whitespace(chars, start + 1)
+        ),
+        (Some(left), Some(right)) if is_math_operand_char(left) && is_math_operand_char(right)
+    )
+}
+
+fn math_relational_context(chars: &[char], start: usize, consumed: usize) -> bool {
+    matches!(
+        (
+            prev_non_whitespace(chars, start),
+            next_non_whitespace(chars, start + consumed)
+        ),
+        (Some(left), Some(right)) if is_math_operand_char(left) && is_math_operand_char(right)
+    )
+}
+
+fn math_digit_context(chars: &[char], start: usize) -> bool {
+    matches!(
+        (
+            prev_non_whitespace(chars, start),
+            next_non_whitespace(chars, start + 1)
+        ),
+        (Some(left), Some(right)) if left.is_ascii_digit() && right.is_ascii_digit()
+    )
+}
+
+fn math_exponent_context(chars: &[char], start: usize) -> bool {
+    math_general_context(chars, start)
+}
+
+fn math_percent_context(chars: &[char], start: usize) -> bool {
+    matches!(prev_non_whitespace(chars, start), Some(left) if left.is_ascii_digit())
+}
+
+fn math_slash_context(chars: &[char], start: usize) -> bool {
+    let Some(left) = prev_non_whitespace(chars, start) else {
+        return false;
+    };
+    let Some(right) = next_non_whitespace(chars, start + 1) else {
+        return false;
+    };
+    if !left.is_ascii_digit() || !right.is_ascii_digit() {
+        return false;
+    }
+    let left_space = start > 0 && chars[start - 1].is_ascii_whitespace();
+    let right_space = matches!(chars.get(start + 1), Some(ch) if ch.is_ascii_whitespace());
+    if left_space || right_space {
+        return true;
+    }
+    digit_run_left(chars, start) > 1 || digit_run_right(chars, start + 1) > 1
+}
+
+fn prev_non_whitespace(chars: &[char], start: usize) -> Option<char> {
+    if start == 0 {
+        return None;
+    }
+    let mut i = start;
+    while i > 0 {
+        i -= 1;
+        let ch = chars[i];
+        if !ch.is_whitespace() {
+            return Some(ch);
+        }
+    }
+    None
+}
+
+fn next_non_whitespace(chars: &[char], start: usize) -> Option<char> {
+    let mut i = start;
+    while let Some(&ch) = chars.get(i) {
+        if !ch.is_whitespace() {
+            return Some(ch);
+        }
+        i += 1;
+    }
+    None
+}
+
+fn digit_run_left(chars: &[char], start: usize) -> usize {
+    let mut count = 0usize;
+    let mut i = start;
+    while i > 0 {
+        let ch = chars[i - 1];
+        if ch.is_ascii_digit() {
+            count += 1;
+            i -= 1;
+        } else {
+            break;
+        }
+    }
+    count
+}
+
+fn digit_run_right(chars: &[char], start: usize) -> usize {
+    let mut count = 0usize;
+    let mut i = start;
+    while let Some(&ch) = chars.get(i) {
+        if ch.is_ascii_digit() {
+            count += 1;
+            i += 1;
+        } else {
+            break;
+        }
+    }
+    count
+}
+
+fn is_math_operand_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || matches!(ch, ')' | ']' | '}')
+}
+
+fn collapse_whitespace(text: &str) -> String {
+    let mut out = String::new();
+    let mut last_was_space = false;
+    for ch in text.chars() {
+        if ch.is_whitespace() {
+            if !last_was_space {
+                out.push(' ');
+                last_was_space = true;
+            }
+        } else {
+            out.push(ch);
+            last_was_space = false;
+        }
+    }
+    out.trim().to_string()
+}
+
 fn parse_token(chars: &[char], start: usize) -> Option<(String, usize)> {
     let mut i = start;
     let mut negative = false;
@@ -1116,7 +1360,7 @@ const TENS: [&str; 10] = [
 mod tests {
     use super::{
         normalize_abbreviations, normalize_acronyms, normalize_cardinals, normalize_dates,
-        normalize_money_time, normalize_units,
+        normalize_math, normalize_money_time, normalize_units,
     };
 
     #[test]
@@ -1256,5 +1500,30 @@ mod tests {
         assert_eq!(normalize_units("5 sec"), "five seconds");
         assert_eq!(normalize_units("5 min"), "five minutes");
         assert_eq!(normalize_units("5 hr"), "five hours");
+    }
+
+    #[test]
+    fn normalizes_math_symbols() {
+        assert_eq!(normalize_math("2 + 2 = 4"), "2 plus 2 equals 4");
+        assert_eq!(normalize_math("5 - 3"), "5 minus 3");
+        assert_eq!(normalize_math("2*3"), "2 times 3");
+        assert_eq!(normalize_math("2 * 3"), "2 times 3");
+        assert_eq!(normalize_math("10/2"), "10 divided by 2");
+        assert_eq!(normalize_math("8 / 2"), "8 divided by 2");
+        assert_eq!(normalize_math("x^2"), "x to the power of 2");
+        assert_eq!(normalize_math("a <= b"), "a less than or equal to b");
+        assert_eq!(normalize_math("a >= b"), "a greater than or equal to b");
+        assert_eq!(normalize_math("a < b"), "a less than b");
+        assert_eq!(normalize_math("a > b"), "a greater than b");
+        assert_eq!(normalize_math("3×4"), "3 times 4");
+        assert_eq!(normalize_math("8÷2"), "8 divided by 2");
+        assert_eq!(normalize_math("x≠y"), "x not equal to y");
+        assert_eq!(normalize_math("x≤y"), "x less than or equal to y");
+        assert_eq!(normalize_math("x≥y"), "x greater than or equal to y");
+        assert_eq!(normalize_math("10 ± 2"), "10 plus or minus 2");
+        assert_eq!(normalize_math("50%"), "50 percent");
+        assert_eq!(normalize_math("text-to-speech"), "text-to-speech");
+        assert_eq!(normalize_math("**bold**"), "**bold**");
+        assert_eq!(normalize_math("5/6"), "5/6");
     }
 }

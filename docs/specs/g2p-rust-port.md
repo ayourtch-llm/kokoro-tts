@@ -184,6 +184,7 @@ Sub-features (each as its own sub-commit if they grow):
 8. **Common abbreviations**: `Mr.`/`Mrs.`/`Ms.`/`Dr.` → titles spoken; `St.` → "Saint" or "Street" (context-dependent — punt: always "Saint" for now); `e.g.` → "for example"; `i.e.` → "that is"; `etc.` → "et cetera"; `vs.` → "versus".
 9. **Acronyms**: heuristic — if all-caps and no vowels (or a 2-3 char all-caps with consonants), spell letter-by-letter (`FBI` → "F B I"). If pronounceable (`NASA`, `RADAR`), pronounce as a normal word.
 10. **Units**: `kg` → "kilograms", `km` → "kilometers", `mph` → "miles per hour", `°C` → "degrees Celsius". Pluralize based on preceding number if any.
+11. **Math symbols**: `+`, `=`, `-`, `*`, `/`, `^`, `<`, `>`, `%`, `≤`, `≥`, `≠`, `×`, `÷`, `±` normalize to spoken operators with conservative context guards.
 
 This stage is the longest tail — there are always more cases. Aim for 95% coverage of normal English text and call it shipped. Stage 5 will catch the rest as OOV.
 
@@ -285,6 +286,7 @@ These can be installed in a venv; runtime Rust binary stays fully native.
 | 3.5 | Money + time | 100% on curated set | 75/75 | `$`, `€`, `£`, `¥`, `¢`, and `h:mm` |
 | 3.6 | Dates | 100% on curated set | 82/82 | ISO, slash, hyphen, month-name forms |
 | 3.7 | Units | 100% on curated set | 100/100 | length, mass, time, speed, temperature |
+| 3.8 | Math symbols | 100% on curated set | 126/126 | `+`, `=`, `-`, `*`, `/`, `^`, comparison ops, and unicode math |
 | 4 | Homograph disambiguation | ≥80% on 50-sentence set | 54/61 = 88.5% | rule-mirror reference, not POS-tagger oracle (`nltk` / `spacy` absent locally; real oracle validation deferred to M3) |
 | 5 | OOV LTS rules | ≥70% char-agreement on 100-word OOV set | avg_similarity=0.844 | `Kubernetes` is the first visible miss, but the threshold is cleared |
 | 6 | End-to-end intelligibility | ≥90% word agreement on 100-sentence ASR round-trip | staged | `tools/end_to_end_corpus.txt` + `tools/end_to_end_roundtrip.py` are included for the batch sweep |
