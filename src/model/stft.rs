@@ -52,6 +52,13 @@ impl CustomStft {
         let x = waveform.unsqueeze(1)?;
         let real = x.conv1d(&self.weight_forward_real, 0, self.hop_length, 1, 1)?;
         let imag = x.conv1d(&self.weight_forward_imag, 0, self.hop_length, 1, 1)?;
+        // For real-valued input, the DFT's imaginary part at DC (bin 0) and at
+        // Nyquist (bin n_fft/2) is mathematically zero. Float-precision noise
+        // from the conv1d sum can leave them at ±tiny with platform-dependent
+        // sign — torch's BLAS path and candle's path don't agree on the sign.
+        // atan2 then returns ±π non-deterministically. Zeroing those bins is
+        // mathematically correct for real input and removes the divergence.
+        let imag = zero_dc_and_nyquist_imag(&imag, self.n_fft)?;
         let magnitude = ((real.sqr()? + imag.sqr()?)? + 1e-14f64)?.sqrt()?;
         let phase = atan2_tensor(&imag, &real)?;
         Ok((magnitude, phase))
@@ -99,6 +106,18 @@ fn hann_window_periodic(n_fft: usize) -> Vec<f32> {
     (0..n_fft)
         .map(|n| 0.5 - 0.5 * (2.0 * std::f32::consts::PI * n as f32 / n_fft as f32).cos())
         .collect()
+}
+
+fn zero_dc_and_nyquist_imag(imag: &Tensor, n_fft: usize) -> Result<Tensor> {
+    let freq_bins = n_fft / 2 + 1;
+    if freq_bins < 2 {
+        return Ok(imag.clone());
+    }
+    let batch = imag.dim(0)?;
+    let time = imag.dim(2)?;
+    let zeros_row = Tensor::zeros((batch, 1, time), imag.dtype(), imag.device())?;
+    let middle = imag.narrow(1, 1, freq_bins - 2)?;
+    Tensor::cat(&[&zeros_row, &middle, &zeros_row], 1)
 }
 
 fn atan2_tensor(y: &Tensor, x: &Tensor) -> Result<Tensor> {
