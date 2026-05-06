@@ -26,8 +26,9 @@ impl Phonemizer for StubPhonemizer {
 }
 
 mod arpabet;
-mod misaki_gold;
 mod lexicon;
+mod misaki_gold;
+mod sentence;
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct TwoTierPhonemizer;
@@ -37,21 +38,15 @@ impl Phonemizer for TwoTierPhonemizer {
         let gold = misaki_gold::lexicon();
         let lexicon = lexicon::lexicon();
         let mut out = String::new();
-        for token in tokenize(text) {
-            match token {
-                Token::Word(word) => {
-                    if needs_space_before_word(&out) {
-                        out.push(' ');
-                    }
-                    let ipa = gold
-                        .lookup(&word)
-                        .map(str::to_owned)
-                        .or_else(|| lexicon.lookup(&word).map(arpabet::phones_to_ipa))
-                        .unwrap_or_else(|| spell_out_word(&word));
-                    out.push_str(&ipa);
-                }
-                Token::Punct(punct) => out.push(punct),
+        for sentence in sentence::split_sentences(text) {
+            let sentence_out = phonemize_chunk(&sentence, gold, lexicon);
+            if sentence_out.is_empty() {
+                continue;
             }
+            if !out.is_empty() {
+                out.push(' ');
+            }
+            out.push_str(&sentence_out);
         }
         Ok(out)
     }
@@ -84,6 +79,31 @@ enum Token {
     Punct(char),
 }
 
+fn phonemize_chunk(
+    text: &str,
+    gold: &misaki_gold::MisakiGoldLexicon,
+    lexicon: &lexicon::Lexicon,
+) -> String {
+    let mut out = String::new();
+    for token in tokenize(text) {
+        match token {
+            Token::Word(word) => {
+                if needs_space_before_word(&out) {
+                    out.push(' ');
+                }
+                let ipa = gold
+                    .lookup(&word)
+                    .map(str::to_owned)
+                    .or_else(|| lexicon.lookup(&word).map(arpabet::phones_to_ipa))
+                    .unwrap_or_else(|| spell_out_word(&word));
+                out.push_str(&ipa);
+            }
+            Token::Punct(punct) => out.push(punct),
+        }
+    }
+    out
+}
+
 fn tokenize(text: &str) -> Vec<Token> {
     let mut tokens = Vec::new();
     let mut current = String::new();
@@ -94,7 +114,10 @@ fn tokenize(text: &str) -> Vec<Token> {
             if !current.is_empty() {
                 tokens.push(Token::Word(std::mem::take(&mut current)));
             }
-            if matches!(ch, ',' | '.' | '!' | '?' | ';' | ':') {
+            if matches!(
+                ch,
+                ',' | '.' | '!' | '?' | ';' | ':' | '“' | '”' | '—' | '…'
+            ) {
                 tokens.push(Token::Punct(ch));
             }
         }
@@ -179,6 +202,16 @@ mod tests {
         assert_eq!(
             TwoTierPhonemizer.phonemize("hello world").unwrap(),
             MILESTONE_TEST_PHONEMES
+        );
+    }
+
+    #[test]
+    fn two_tier_keeps_sentence_punctuation() {
+        assert_eq!(
+            TwoTierPhonemizer
+                .phonemize("hello world. hello world?")
+                .unwrap(),
+            "həlˈO wˈɜɹld. həlˈO wˈɜɹld?"
         );
     }
 }
