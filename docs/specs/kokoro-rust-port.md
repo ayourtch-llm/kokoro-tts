@@ -358,7 +358,7 @@ Fill this in as you go. Same format as `~/rust/nemotron-speech/state.md`. Number
 | 2. phonemes_to_ids | exact | exact | ids `[50, 83, 54, 156, 57, 135, 16, 65, 156, 87, 123, 54, 46]` |
 | 3. CustomAlbert (PL-BERT) | 7.361e-6 | 1.355e-6 | release checker, shape `[1, 15, 768]`; converted token_type embeddings are `[2, 128]` |
 | 4. bert_encoder Linear | 5.007e-6 | 2.953e-7 | isolated linear check using reference `bert_dur`, shape `[1, 15, 512]` |
-| 5. TextEncoder | — | — | |
+| 5. TextEncoder | 2.161e-6 | 9.375e-8 | release checker, shape `[1, 512, 15]`; validates CNN weight-norm fold + channel LayerNorm + BiLSTM |
 | 6. predict_duration logits | — | — | |
 | 6b. Integer durations | — | — | exact match required |
 | 7. Alignment matrix | — | — | exact match required |
