@@ -123,13 +123,9 @@ fn synthesize(
             device,
             args.verbose,
         )?,
-        (None, None) => synthesize_phonemes(
-            model,
-            MILESTONE_TEST_PHONEMES,
-            voice,
-            args.speed,
-            device,
-        )?,
+        (None, None) => {
+            synthesize_phonemes(model, MILESTONE_TEST_PHONEMES, voice, args.speed, device)?
+        }
     };
     samples_to_tensor(samples, device)
 }
