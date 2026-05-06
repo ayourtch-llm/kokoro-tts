@@ -48,6 +48,25 @@ pub fn normalize_acronyms(text: &str) -> String {
     out
 }
 
+pub fn normalize_money_time(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::new();
+    let mut i = 0;
+    while i < chars.len() {
+        if let Some((replacement, consumed)) = match_money_prefix(&chars, i)
+            .or_else(|| match_cents_suffix(&chars, i))
+            .or_else(|| match_time(&chars, i))
+        {
+            out.push_str(&replacement);
+            i += consumed;
+        } else {
+            out.push(chars[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
 fn parse_token(chars: &[char], start: usize) -> Option<(String, usize)> {
     let mut i = start;
     let mut negative = false;
@@ -155,6 +174,9 @@ fn parse_token(chars: &[char], start: usize) -> Option<(String, usize)> {
 }
 
 fn match_abbreviation(chars: &[char], start: usize) -> Option<(&'static str, usize)> {
+    if start > 0 && chars[start - 1].is_ascii_alphanumeric() {
+        return None;
+    }
     const ABBREVIATIONS: &[(&str, &str)] = &[
         ("mrs.", "Missus"),
         ("mr.", "Mister"),
@@ -228,6 +250,166 @@ fn split_possessive(token: &str) -> Option<(&str, bool)> {
     } else {
         Some((token, false))
     }
+}
+
+fn match_money_prefix(chars: &[char], start: usize) -> Option<(String, usize)> {
+    let symbol = *chars.get(start)?;
+    let unit = match symbol {
+        '$' => ("dollar", "dollars"),
+        '€' => ("euro", "euros"),
+        '£' => ("pound", "pounds"),
+        '¥' => ("yen", "yen"),
+        _ => return None,
+    };
+    let (int_part, frac_part, consumed) = scan_currency_amount(chars, start + 1)?;
+    let trimmed = int_part.trim_start_matches('0');
+    let value = if trimmed.is_empty() { "0" } else { trimmed };
+    let mut out = String::new();
+    out.push_str(&integer_to_words(value));
+    out.push(' ');
+    out.push_str(if value == "1" { unit.0 } else { unit.1 });
+    if let Some(frac_part) = frac_part {
+        if let Some(cents) = cents_words(&frac_part) {
+            out.push(' ');
+            out.push_str(&cents);
+        }
+    }
+    Some((out, consumed + 1))
+}
+
+fn match_cents_suffix(chars: &[char], start: usize) -> Option<(String, usize)> {
+    if !is_number_boundary(chars, start) {
+        return None;
+    }
+    let (int_part, consumed) = scan_integer_span(chars, start)?;
+    if !matches!(chars.get(start + consumed), Some('¢')) {
+        return None;
+    }
+    let trimmed = int_part.trim_start_matches('0');
+    let value = if trimmed.is_empty() { "0" } else { trimmed };
+    let mut out = integer_to_words(value);
+    out.push(' ');
+    out.push_str(if value == "1" { "cent" } else { "cents" });
+    Some((out, consumed + 1))
+}
+
+fn match_time(chars: &[char], start: usize) -> Option<(String, usize)> {
+    if !matches!(chars.get(start), Some(ch) if ch.is_ascii_digit()) {
+        return None;
+    }
+    if !is_number_boundary(chars, start) {
+        return None;
+    }
+    let (hour, hour_len) = scan_integer_span(chars, start)?;
+    let colon = start + hour_len;
+    if !matches!(chars.get(colon), Some(':')) {
+        return None;
+    }
+    let (minute, minute_len) = scan_integer_span(chars, colon + 1)?;
+    if minute.is_empty() || matches!(chars.get(colon + 1 + minute_len), Some(':')) {
+        return None;
+    }
+    let phrase = time_phrase(&hour, &minute);
+    Some((phrase, hour_len + 1 + minute_len))
+}
+
+fn scan_currency_amount(chars: &[char], start: usize) -> Option<(String, Option<String>, usize)> {
+    let mut i = start;
+    let mut int_part = String::new();
+    let mut frac_part = String::new();
+    let mut decimal = false;
+    let mut saw_digit = false;
+    while let Some(&ch) = chars.get(i) {
+        if ch.is_ascii_digit() {
+            saw_digit = true;
+            if decimal {
+                frac_part.push(ch);
+            } else {
+                int_part.push(ch);
+            }
+            i += 1;
+            continue;
+        }
+        if ch == ',' && !decimal {
+            let Some(next) = chars.get(i + 1) else {
+                break;
+            };
+            if next.is_ascii_digit() {
+                i += 1;
+                continue;
+            }
+            break;
+        }
+        if ch == '.' && !decimal {
+            let Some(next) = chars.get(i + 1) else {
+                break;
+            };
+            if next.is_ascii_digit() {
+                decimal = true;
+                i += 1;
+                continue;
+            }
+        }
+        break;
+    }
+    if !saw_digit {
+        return None;
+    }
+    let frac = if decimal && !frac_part.is_empty() {
+        Some(frac_part)
+    } else {
+        None
+    };
+    Some((int_part, frac, i - start))
+}
+
+fn scan_integer_span(chars: &[char], start: usize) -> Option<(String, usize)> {
+    let mut i = start;
+    let mut out = String::new();
+    while let Some(&ch) = chars.get(i) {
+        if ch.is_ascii_digit() {
+            out.push(ch);
+            i += 1;
+        } else {
+            break;
+        }
+    }
+    if out.is_empty() {
+        None
+    } else {
+        Some((out, i - start))
+    }
+}
+
+fn cents_words(frac_part: &str) -> Option<String> {
+    let mut digits = frac_part.chars().take(2).collect::<String>();
+    if digits.is_empty() {
+        return None;
+    }
+    if digits.len() == 1 {
+        digits.push('0');
+    }
+    let trimmed = digits.trim_start_matches('0');
+    let value = if trimmed.is_empty() { "0" } else { trimmed };
+    let mut out = integer_to_words(value);
+    out.push(' ');
+    out.push_str(if value == "1" { "cent" } else { "cents" });
+    Some(out)
+}
+
+fn time_phrase(hour: &str, minute: &str) -> String {
+    let hour_words = integer_to_words(hour);
+    let minute_trimmed = minute.trim_start_matches('0');
+    if minute_trimmed.is_empty() {
+        return hour_words;
+    }
+    if minute.len() == 2 && minute.starts_with('0') {
+        return format!(
+            "{hour_words} oh {}",
+            digit_to_word(minute.chars().nth(1).unwrap())
+        );
+    }
+    format!("{hour_words} {}", integer_to_words(minute))
 }
 
 pub fn is_pronounce_as_word_acronym(word: &str) -> bool {
@@ -490,7 +672,9 @@ const TENS: [&str; 10] = [
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_abbreviations, normalize_acronyms, normalize_cardinals};
+    use super::{
+        normalize_abbreviations, normalize_acronyms, normalize_cardinals, normalize_money_time,
+    };
 
     #[test]
     fn normalizes_simple_integers() {
@@ -573,5 +757,24 @@ mod tests {
     fn keeps_possessive_acronyms_intact_for_phonemizer() {
         assert_eq!(normalize_acronyms("NASA's"), "NASA's");
         assert_eq!(normalize_acronyms("FBI's"), "FBI's");
+    }
+
+    #[test]
+    fn normalizes_money_and_time() {
+        assert_eq!(normalize_money_time("$5"), "five dollars");
+        assert_eq!(normalize_money_time("$1"), "one dollar");
+        assert_eq!(normalize_money_time("$5.50"), "five dollars fifty cents");
+        assert_eq!(
+            normalize_money_time("$1,234.56"),
+            "one thousand two hundred thirty four dollars fifty six cents"
+        );
+        assert_eq!(normalize_money_time("€5"), "five euros");
+        assert_eq!(normalize_money_time("£1"), "one pound");
+        assert_eq!(normalize_money_time("¥5"), "five yen");
+        assert_eq!(normalize_money_time("5¢"), "five cents");
+        assert_eq!(normalize_money_time("1¢"), "one cent");
+        assert_eq!(normalize_money_time("3:45"), "three forty five");
+        assert_eq!(normalize_money_time("3:00"), "three");
+        assert_eq!(normalize_money_time("12:00"), "twelve");
     }
 }

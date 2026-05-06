@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Reference for stage 3.4: cardinal + ordinal + year + abbreviation + acronym normalization."""
+"""Reference for stage 3.5: cardinal + ordinal + year + abbreviation + acronym + money/time normalization."""
 
 from __future__ import annotations
 
@@ -69,6 +69,19 @@ CASES = [
     "FBI CIA USA SQL HTML CSS USB should spell out.",
     "NASA's mission succeeded.",
     "The SQL query used JSON and FAQ docs.",
+    "$5",
+    "$1",
+    "$5.50",
+    "$1,234.56",
+    "€5",
+    "£1",
+    "¥5",
+    "5¢",
+    "1¢",
+    "3:45",
+    "3:00",
+    "12:00",
+    "The meeting starts at 3:45 PM and costs $25 per person.",
 ]
 
 UNITS = [
@@ -110,6 +123,7 @@ TENS = [
 
 def normalize(text: str) -> str:
     text = normalize_abbreviations(text)
+    text = normalize_money_time(text)
     text = normalize_acronyms(text)
     chars = list(text)
     out: list[str] = []
@@ -361,6 +375,10 @@ def normalize_abbreviations(text: str) -> str:
     out: list[str] = []
     i = 0
     while i < len(chars):
+        if i > 0 and chars[i - 1].isalnum():
+            out.append(chars[i])
+            i += 1
+            continue
         for needle, repl in abbrevs:
             if text[i : i + len(needle)].lower() == needle:
                 out.append(repl)
@@ -393,6 +411,242 @@ def normalize_acronyms(text: str) -> str:
         out.append(chars[i])
         i += 1
     return "".join(out)
+
+
+def normalize_money_time(text: str) -> str:
+    chars = list(text)
+    out: list[str] = []
+    i = 0
+    while i < len(chars):
+        for matcher in (match_money_prefix, match_cents_suffix, match_time):
+            result = matcher(chars, i)
+            if result is not None:
+                replacement, consumed = result
+                out.append(replacement)
+                i += consumed
+                break
+        else:
+            out.append(chars[i])
+            i += 1
+    return "".join(out)
+
+
+def match_money_prefix(chars: list[str], start: int) -> tuple[str, int] | None:
+    if start >= len(chars) or chars[start] not in "$€£¥":
+        return None
+    unit = {
+        "$": ("dollar", "dollars"),
+        "€": ("euro", "euros"),
+        "£": ("pound", "pounds"),
+        "¥": ("yen", "yen"),
+    }[chars[start]]
+    int_part, frac_part, consumed = scan_currency_amount(chars, start + 1)
+    if not int_part:
+        return None
+    value = int_part.lstrip("0") or "0"
+    words = [integer_to_words(value), unit[0] if value == "1" else unit[1]]
+    if frac_part:
+        cents = cents_words(frac_part)
+        if cents:
+            words.append(cents)
+    return " ".join(words), consumed + 1
+
+
+def match_cents_suffix(chars: list[str], start: int) -> tuple[str, int] | None:
+    if start > 0 and (chars[start - 1].isalnum() or chars[start - 1] in ":/"):
+        return None
+    int_part, consumed = scan_integer_span(chars, start)
+    if not int_part or start + consumed >= len(chars) or chars[start + consumed] != "¢":
+        return None
+    value = int_part.lstrip("0") or "0"
+    unit = "cent" if value == "1" else "cents"
+    return f"{integer_to_words(value)} {unit}", consumed + 1
+
+
+def match_time(chars: list[str], start: int) -> tuple[str, int] | None:
+    if start >= len(chars) or not chars[start].isdigit():
+        return None
+    if start > 0 and (chars[start - 1].isalnum() or chars[start - 1] in ":/"):
+        return None
+    hour, hour_len = scan_integer_span(chars, start)
+    if not hour:
+        return None
+    colon = start + hour_len
+    if colon >= len(chars) or chars[colon] != ":":
+        return None
+    minute, minute_len = scan_integer_span(chars, colon + 1)
+    if not minute or (colon + 1 + minute_len < len(chars) and chars[colon + 1 + minute_len] == ":"):
+        return None
+    return time_phrase(hour, minute), hour_len + 1 + minute_len
+
+
+def scan_currency_amount(chars: list[str], start: int) -> tuple[str, str, int]:
+    i = start
+    int_part: list[str] = []
+    frac_part: list[str] = []
+    decimal = False
+    while i < len(chars):
+        ch = chars[i]
+        if ch.isdigit():
+            (frac_part if decimal else int_part).append(ch)
+            i += 1
+            continue
+        if ch == "," and not decimal and i + 1 < len(chars) and chars[i + 1].isdigit():
+            i += 1
+            continue
+        if ch == "." and not decimal and i + 1 < len(chars) and chars[i + 1].isdigit():
+            decimal = True
+            i += 1
+            continue
+        break
+    return "".join(int_part), "".join(frac_part), i - start
+
+
+def scan_integer_span(chars: list[str], start: int) -> tuple[str, int]:
+    i = start
+    out: list[str] = []
+    while i < len(chars) and chars[i].isdigit():
+        out.append(chars[i])
+        i += 1
+    return "".join(out), i - start
+
+
+def cents_words(frac_part: str) -> str | None:
+    digits = frac_part[:2]
+    if len(digits) == 1:
+        digits += "0"
+    if not digits:
+        return None
+    value = digits.lstrip("0") or "0"
+    unit = "cent" if value == "1" else "cents"
+    return f"{integer_to_words(value)} {unit}"
+
+
+def time_phrase(hour: str, minute: str) -> str:
+    hour_words = integer_to_words(hour)
+    minute_trimmed = minute.lstrip("0")
+    if not minute_trimmed:
+        return hour_words
+    if len(minute) == 2 and minute.startswith("0"):
+        return f"{hour_words} oh {digit_to_word(minute[1])}"
+    return f"{hour_words} {integer_to_words(minute)}"
+
+
+def normalize_money_time(text: str) -> str:
+    chars = list(text)
+    out: list[str] = []
+    i = 0
+    while i < len(chars):
+        for matcher in (match_money_prefix, match_cents_suffix, match_time):
+            result = matcher(chars, i)
+            if result is not None:
+                replacement, consumed = result
+                out.append(replacement)
+                i += consumed
+                break
+        else:
+            out.append(chars[i])
+            i += 1
+    return "".join(out)
+
+
+def match_money_prefix(chars: list[str], start: int) -> tuple[str, int] | None:
+    if start >= len(chars) or chars[start] not in "$€£¥":
+        return None
+    unit = {
+        "$": ("dollar", "dollars"),
+        "€": ("euro", "euros"),
+        "£": ("pound", "pounds"),
+        "¥": ("yen", "yen"),
+    }[chars[start]]
+    int_part, frac_part, consumed = scan_currency_amount(chars, start + 1)
+    if not int_part:
+        return None
+    value = int_part.lstrip("0") or "0"
+    words = [integer_to_words(value), unit[0] if value == "1" else unit[1]]
+    if frac_part:
+        cents = cents_words(frac_part)
+        if cents:
+            words.append(cents)
+    return " ".join(words), consumed + 1
+
+
+def match_cents_suffix(chars: list[str], start: int) -> tuple[str, int] | None:
+    int_part, consumed = scan_integer_span(chars, start)
+    if not int_part or start + consumed >= len(chars) or chars[start + consumed] != "¢":
+        return None
+    value = int_part.lstrip("0") or "0"
+    unit = "cent" if value == "1" else "cents"
+    return f"{integer_to_words(value)} {unit}", consumed + 1
+
+
+def match_time(chars: list[str], start: int) -> tuple[str, int] | None:
+    if start >= len(chars) or not chars[start].isdigit():
+        return None
+    if start > 0 and (chars[start - 1].isalnum() or chars[start - 1] in ":/"):
+        return None
+    hour, hour_len = scan_integer_span(chars, start)
+    if not hour:
+        return None
+    colon = start + hour_len
+    if colon >= len(chars) or chars[colon] != ":":
+        return None
+    minute, minute_len = scan_integer_span(chars, colon + 1)
+    if not minute or (colon + 1 + minute_len < len(chars) and chars[colon + 1 + minute_len] == ":"):
+        return None
+    return time_phrase(hour, minute), hour_len + 1 + minute_len
+
+
+def scan_currency_amount(chars: list[str], start: int) -> tuple[str, str, int]:
+    i = start
+    int_part: list[str] = []
+    frac_part: list[str] = []
+    decimal = False
+    while i < len(chars):
+        ch = chars[i]
+        if ch.isdigit():
+            (frac_part if decimal else int_part).append(ch)
+            i += 1
+            continue
+        if ch == "," and not decimal and i + 1 < len(chars) and chars[i + 1].isdigit():
+            i += 1
+            continue
+        if ch == "." and not decimal and i + 1 < len(chars) and chars[i + 1].isdigit():
+            decimal = True
+            i += 1
+            continue
+        break
+    return "".join(int_part), "".join(frac_part), i - start
+
+
+def scan_integer_span(chars: list[str], start: int) -> tuple[str, int]:
+    i = start
+    out: list[str] = []
+    while i < len(chars) and chars[i].isdigit():
+        out.append(chars[i])
+        i += 1
+    return "".join(out), i - start
+
+
+def cents_words(frac_part: str) -> str | None:
+    digits = frac_part[:2]
+    if len(digits) == 1:
+        digits += "0"
+    if not digits:
+        return None
+    value = digits.lstrip("0") or "0"
+    unit = "cent" if value == "1" else "cents"
+    return f"{integer_to_words(value)} {unit}"
+
+
+def time_phrase(hour: str, minute: str) -> str:
+    hour_words = integer_to_words(hour)
+    minute_trimmed = minute.lstrip("0")
+    if not minute_trimmed:
+        return hour_words
+    if len(minute) == 2 and minute.startswith("0"):
+        return f"{hour_words} oh {digit_to_word(minute[1])}"
+    return f"{hour_words} {integer_to_words(minute)}"
 
 
 def main() -> None:
