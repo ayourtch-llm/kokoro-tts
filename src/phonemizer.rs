@@ -37,6 +37,8 @@ pub use normalize::normalize_acronyms;
 #[allow(unused_imports)]
 pub use normalize::normalize_cardinals;
 #[allow(unused_imports)]
+pub use normalize::normalize_dates;
+#[allow(unused_imports)]
 pub use normalize::normalize_money_time;
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -94,7 +96,9 @@ fn phonemize_chunk(
     lexicon: &lexicon::Lexicon,
 ) -> String {
     let text = normalize_cardinals(&normalize::normalize_acronyms(
-        &normalize::normalize_money_time(&normalize::normalize_abbreviations(text)),
+        &normalize::normalize_money_time(&normalize::normalize_dates(
+            &normalize::normalize_abbreviations(text),
+        )),
     ));
     let mut out = String::new();
     for token in tokenize(text) {

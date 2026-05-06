@@ -48,6 +48,26 @@ pub fn normalize_acronyms(text: &str) -> String {
     out
 }
 
+pub fn normalize_dates(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::new();
+    let mut i = 0;
+    while i < chars.len() {
+        if let Some((replacement, consumed)) = match_iso_date(&chars, i)
+            .or_else(|| match_slash_date(&chars, i))
+            .or_else(|| match_hyphen_date(&chars, i))
+            .or_else(|| match_month_date(&chars, i))
+        {
+            out.push_str(&replacement);
+            i += consumed;
+        } else {
+            out.push(chars[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
 pub fn normalize_money_time(text: &str) -> String {
     let chars: Vec<char> = text.chars().collect();
     let mut out = String::new();
@@ -249,6 +269,253 @@ fn split_possessive(token: &str) -> Option<(&str, bool)> {
         Some((&token[..token.len() - 2], true))
     } else {
         Some((token, false))
+    }
+}
+
+fn match_iso_date(chars: &[char], start: usize) -> Option<(String, usize)> {
+    let (year, y_len) = scan_exact_digits(chars, start, 4)?;
+    if !matches!(chars.get(start + y_len), Some('-')) {
+        return None;
+    }
+    let (month, m_len) = scan_exact_digits(chars, start + y_len + 1, 2)?;
+    if !matches!(chars.get(start + y_len + 1 + m_len), Some('-')) {
+        return None;
+    }
+    let (day, d_len) = scan_day_token(chars, start + y_len + 1 + m_len + 1)?;
+    let year_num = year.parse::<u16>().ok()?;
+    let month_num = month.parse::<u8>().ok()?;
+    let day_num = day.parse::<u8>().ok()?;
+    let month_name = month_name_from_number(month_num)?;
+    Some((
+        format!(
+            "{} {} {}",
+            month_name,
+            ordinal_phrase(&day_num.to_string()),
+            year_phrase(year_num)
+        ),
+        y_len + 1 + m_len + 1 + d_len,
+    ))
+}
+
+fn match_slash_date(chars: &[char], start: usize) -> Option<(String, usize)> {
+    let (first, a_len) = scan_day_token(chars, start)?;
+    if !matches!(chars.get(start + a_len), Some('/')) {
+        return None;
+    }
+    let (second, b_len) = scan_day_token(chars, start + a_len + 1)?;
+    if !matches!(chars.get(start + a_len + 1 + b_len), Some('/')) {
+        return None;
+    }
+    let (year, c_len) = scan_exact_digits(chars, start + a_len + 1 + b_len + 1, 4)?;
+    let month_num = first.parse::<u8>().ok()?;
+    let day_num = second.parse::<u8>().ok()?;
+    let year_num = year.parse::<u16>().ok()?;
+    let month_name = month_name_from_number(month_num)?;
+    Some((
+        format!(
+            "{} {} {}",
+            month_name,
+            ordinal_phrase(&day_num.to_string()),
+            year_phrase(year_num)
+        ),
+        a_len + 1 + b_len + 1 + c_len,
+    ))
+}
+
+fn match_hyphen_date(chars: &[char], start: usize) -> Option<(String, usize)> {
+    let (first, a_len) = scan_day_token(chars, start)?;
+    if !matches!(chars.get(start + a_len), Some('-')) {
+        return None;
+    }
+    let (second, b_len) = scan_day_token(chars, start + a_len + 1)?;
+    if !matches!(chars.get(start + a_len + 1 + b_len), Some('-')) {
+        return None;
+    }
+    let (third, c_len) = scan_day_token(chars, start + a_len + 1 + b_len + 1)?;
+    if first.len() == 4 && second.len() <= 2 && third.len() <= 2 {
+        let year_num = first.parse::<u16>().ok()?;
+        let month_num = second.parse::<u8>().ok()?;
+        let day_num = third.parse::<u8>().ok()?;
+        let month_name = month_name_from_number(month_num)?;
+        return Some((
+            format!(
+                "{} {} {}",
+                month_name,
+                ordinal_phrase(&day_num.to_string()),
+                year_phrase(year_num)
+            ),
+            a_len + 1 + b_len + 1 + c_len,
+        ));
+    }
+    if first.len() <= 2 && second.len() <= 2 && third.len() == 4 {
+        let month_num = first.parse::<u8>().ok()?;
+        let day_num = second.parse::<u8>().ok()?;
+        let year_num = third.parse::<u16>().ok()?;
+        let month_name = month_name_from_number(month_num)?;
+        return Some((
+            format!(
+                "{} {} {}",
+                month_name,
+                ordinal_phrase(&day_num.to_string()),
+                year_phrase(year_num)
+            ),
+            a_len + 1 + b_len + 1 + c_len,
+        ));
+    }
+    None
+}
+
+fn match_month_date(chars: &[char], start: usize) -> Option<(String, usize)> {
+    let (month_raw, month_len, month_num) = scan_month_name(chars, start)?;
+    let day_start = start + month_len;
+    if !matches!(chars.get(day_start), Some(ch) if ch.is_ascii_whitespace()) {
+        return None;
+    }
+    let mut i = day_start;
+    while matches!(chars.get(i), Some(ch) if ch.is_ascii_whitespace()) {
+        i += 1;
+    }
+    let (day, day_len) = scan_day_token(chars, i)?;
+    let mut consumed = i - start + day_len;
+    let mut year_part = None;
+    let mut j = i + day_len;
+    while matches!(chars.get(j), Some(ch) if ch.is_ascii_whitespace()) {
+        j += 1;
+        consumed += 1;
+    }
+    if matches!(chars.get(j), Some(',')) {
+        j += 1;
+        consumed += 1;
+        while matches!(chars.get(j), Some(ch) if ch.is_ascii_whitespace()) {
+            j += 1;
+            consumed += 1;
+        }
+    }
+    if let Some((year, year_len)) = scan_year_token(chars, j) {
+        year_part = Some((year, year_len));
+        consumed += year_len;
+    }
+    let day_num = day.parse::<u8>().ok()?;
+    let month = month_name_from_number(month_num)?;
+    let month_out = preserve_month_case(&month_raw, month);
+    let mut out = format!("{} {}", month_out, ordinal_phrase(&day_num.to_string()));
+    if let Some((year, _)) = year_part {
+        let year_num = year.parse::<u16>().ok()?;
+        out.push(' ');
+        out.push_str(&year_phrase(year_num));
+    }
+    Some((out, consumed))
+}
+
+fn scan_month_name(chars: &[char], start: usize) -> Option<(String, usize, u8)> {
+    let mut end = start;
+    while let Some(ch) = chars.get(end) {
+        if ch.is_ascii_alphabetic() {
+            end += 1;
+            continue;
+        }
+        break;
+    }
+    if end == start {
+        return None;
+    }
+    let raw = chars.get(start..end)?.iter().collect::<String>();
+    let raw_lower = raw.to_ascii_lowercase();
+    let num = match raw_lower.as_str() {
+        "january" | "jan" => 1,
+        "february" | "feb" => 2,
+        "march" | "mar" => 3,
+        "april" | "apr" => 4,
+        "may" => 5,
+        "june" | "jun" => 6,
+        "july" | "jul" => 7,
+        "august" | "aug" => 8,
+        "september" | "sep" | "sept" => 9,
+        "october" | "oct" => 10,
+        "november" | "nov" => 11,
+        "december" | "dec" => 12,
+        _ => return None,
+    };
+    let mut consumed = end - start;
+    if matches!(chars.get(end), Some('.')) {
+        consumed += 1;
+    }
+    Some((raw, consumed, num))
+}
+
+fn month_name_from_number(month: u8) -> Option<&'static str> {
+    Some(match month {
+        1 => "January",
+        2 => "February",
+        3 => "March",
+        4 => "April",
+        5 => "May",
+        6 => "June",
+        7 => "July",
+        8 => "August",
+        9 => "September",
+        10 => "October",
+        11 => "November",
+        12 => "December",
+        _ => return None,
+    })
+}
+
+fn preserve_month_case(original: &str, canonical: &str) -> String {
+    if original
+        .chars()
+        .all(|ch| ch.is_ascii_uppercase() || ch == '.')
+    {
+        canonical.to_ascii_uppercase()
+    } else if original
+        .chars()
+        .next()
+        .is_some_and(|ch| ch.is_ascii_uppercase())
+    {
+        canonical.to_string()
+    } else {
+        canonical.to_ascii_lowercase()
+    }
+}
+
+fn scan_exact_digits(chars: &[char], start: usize, count: usize) -> Option<(String, usize)> {
+    let mut out = String::new();
+    for idx in 0..count {
+        let ch = *chars.get(start + idx)?;
+        if !ch.is_ascii_digit() {
+            return None;
+        }
+        out.push(ch);
+    }
+    Some((out, count))
+}
+
+fn scan_day_token(chars: &[char], start: usize) -> Option<(String, usize)> {
+    let mut i = start;
+    let mut digits = String::new();
+    while let Some(&ch) = chars.get(i) {
+        if ch.is_ascii_digit() {
+            digits.push(ch);
+            i += 1;
+        } else {
+            break;
+        }
+    }
+    if digits.is_empty() {
+        return None;
+    }
+    if let Some((_, suffix_len)) = ordinal_suffix(chars, i) {
+        i += suffix_len;
+    }
+    Some((digits, i - start))
+}
+
+fn scan_year_token(chars: &[char], start: usize) -> Option<(String, usize)> {
+    let (digits, len) = scan_day_token(chars, start)?;
+    if digits.len() == 4 {
+        Some((digits, len))
+    } else {
+        None
     }
 }
 
@@ -673,7 +940,8 @@ const TENS: [&str; 10] = [
 #[cfg(test)]
 mod tests {
     use super::{
-        normalize_abbreviations, normalize_acronyms, normalize_cardinals, normalize_money_time,
+        normalize_abbreviations, normalize_acronyms, normalize_cardinals, normalize_dates,
+        normalize_money_time,
     };
 
     #[test]
@@ -776,5 +1044,22 @@ mod tests {
         assert_eq!(normalize_money_time("3:45"), "three forty five");
         assert_eq!(normalize_money_time("3:00"), "three");
         assert_eq!(normalize_money_time("12:00"), "twelve");
+    }
+
+    #[test]
+    fn normalizes_dates() {
+        assert_eq!(normalize_dates("2026-05-06"), "May sixth twenty twenty six");
+        assert_eq!(normalize_dates("5/6/2026"), "May sixth twenty twenty six");
+        assert_eq!(normalize_dates("5-6-2026"), "May sixth twenty twenty six");
+        assert_eq!(
+            normalize_dates("May 6, 2026"),
+            "May sixth twenty twenty six"
+        );
+        assert_eq!(
+            normalize_dates("May 6th, 2026"),
+            "May sixth twenty twenty six"
+        );
+        assert_eq!(normalize_dates("May 5"), "May fifth");
+        assert_eq!(normalize_dates("Monday, May 6th"), "Monday, May sixth");
     }
 }

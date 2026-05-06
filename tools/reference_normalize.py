@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Reference for stage 3.5: cardinal + ordinal + year + abbreviation + acronym + money/time normalization."""
+"""Reference for stage 3.6: cardinal + ordinal + year + abbreviation + acronym + money/time + date normalization."""
 
 from __future__ import annotations
 
@@ -82,6 +82,13 @@ CASES = [
     "3:00",
     "12:00",
     "The meeting starts at 3:45 PM and costs $25 per person.",
+    "2026-05-06",
+    "5/6/2026",
+    "5-6-2026",
+    "May 6, 2026",
+    "May 6th, 2026",
+    "May 5",
+    "Monday, May 6th",
 ]
 
 UNITS = [
@@ -123,6 +130,7 @@ TENS = [
 
 def normalize(text: str) -> str:
     text = normalize_abbreviations(text)
+    text = normalize_dates(text)
     text = normalize_money_time(text)
     text = normalize_acronyms(text)
     chars = list(text)
@@ -431,6 +439,24 @@ def normalize_money_time(text: str) -> str:
     return "".join(out)
 
 
+def normalize_dates(text: str) -> str:
+    chars = list(text)
+    out: list[str] = []
+    i = 0
+    while i < len(chars):
+        for matcher in (match_iso_date, match_slash_date, match_hyphen_date, match_month_date):
+            result = matcher(chars, i)
+            if result is not None:
+                replacement, consumed = result
+                out.append(replacement)
+                i += consumed
+                break
+        else:
+            out.append(chars[i])
+            i += 1
+    return "".join(out)
+
+
 def match_money_prefix(chars: list[str], start: int) -> tuple[str, int] | None:
     if start >= len(chars) or chars[start] not in "$€£¥":
         return None
@@ -461,6 +487,195 @@ def match_cents_suffix(chars: list[str], start: int) -> tuple[str, int] | None:
     value = int_part.lstrip("0") or "0"
     unit = "cent" if value == "1" else "cents"
     return f"{integer_to_words(value)} {unit}", consumed + 1
+
+
+def match_iso_date(chars: list[str], start: int) -> tuple[str, int] | None:
+    year, y_len = scan_exact_digits(chars, start, 4)
+    if not year or start + y_len >= len(chars) or chars[start + y_len] != "-":
+        return None
+    month, m_len = scan_exact_digits(chars, start + y_len + 1, 2)
+    if not month or start + y_len + 1 + m_len >= len(chars) or chars[start + y_len + 1 + m_len] != "-":
+        return None
+    day, d_len = scan_day_token(chars, start + y_len + 1 + m_len + 1)
+    if not day:
+        return None
+    month_name = month_name_from_number(int(month))
+    if month_name is None:
+        return None
+    return f"{month_name} {ordinal_phrase(day)} {year_phrase(int(year))}", y_len + 1 + m_len + 1 + d_len
+
+
+def match_slash_date(chars: list[str], start: int) -> tuple[str, int] | None:
+    first, a_len = scan_day_token(chars, start)
+    if not first or start + a_len >= len(chars) or chars[start + a_len] != "/":
+        return None
+    second, b_len = scan_day_token(chars, start + a_len + 1)
+    if not second or start + a_len + 1 + b_len >= len(chars) or chars[start + a_len + 1 + b_len] != "/":
+        return None
+    year, c_len = scan_exact_digits(chars, start + a_len + 1 + b_len + 1, 4)
+    if not year:
+        return None
+    month_name = month_name_from_number(int(first))
+    if month_name is None:
+        return None
+    return f"{month_name} {ordinal_phrase(second)} {year_phrase(int(year))}", a_len + 1 + b_len + 1 + c_len
+
+
+def match_hyphen_date(chars: list[str], start: int) -> tuple[str, int] | None:
+    first, a_len = scan_day_token(chars, start)
+    if not first or start + a_len >= len(chars) or chars[start + a_len] != "-":
+        return None
+    second, b_len = scan_day_token(chars, start + a_len + 1)
+    if not second or start + a_len + 1 + b_len >= len(chars) or chars[start + a_len + 1 + b_len] != "-":
+        return None
+    third, c_len = scan_day_token(chars, start + a_len + 1 + b_len + 1)
+    if not third:
+        return None
+    if len(first) == 4 and len(second) <= 2 and len(third) <= 2:
+        month_name = month_name_from_number(int(second))
+        if month_name is None:
+            return None
+        return f"{month_name} {ordinal_phrase(third)} {year_phrase(int(first))}", a_len + 1 + b_len + 1 + c_len
+    if len(first) <= 2 and len(second) <= 2 and len(third) == 4:
+        month_name = month_name_from_number(int(first))
+        if month_name is None:
+            return None
+        return f"{month_name} {ordinal_phrase(second)} {year_phrase(int(third))}", a_len + 1 + b_len + 1 + c_len
+    return None
+
+
+def match_month_date(chars: list[str], start: int) -> tuple[str, int] | None:
+    month_raw, month_len, month_num = scan_month_name(chars, start)
+    if not month_raw:
+        return None
+    i = start + month_len
+    while i < len(chars) and chars[i].isspace():
+        i += 1
+    day, day_len = scan_day_token(chars, i)
+    if not day:
+        return None
+    consumed = i - start + day_len
+    j = i + day_len
+    while j < len(chars) and chars[j].isspace():
+        j += 1
+        consumed += 1
+    if j < len(chars) and chars[j] == ",":
+        j += 1
+        consumed += 1
+        while j < len(chars) and chars[j].isspace():
+            j += 1
+            consumed += 1
+    year = None
+    year_len = 0
+    if j < len(chars):
+        year, year_len = scan_year_token(chars, j)
+        if year:
+            consumed += year_len
+    month_name = month_name_from_number(month_num)
+    if month_name is None:
+        return None
+    out = f"{month_raw} {ordinal_phrase(day)}"
+    if year:
+        out = f"{out} {year_phrase(int(year))}"
+    return out, consumed
+
+
+def scan_month_name(chars: list[str], start: int) -> tuple[str, int, int] | tuple[None, int, int]:
+    i = start
+    out: list[str] = []
+    while i < len(chars) and chars[i].isalpha():
+        out.append(chars[i])
+        i += 1
+    if not out:
+        return None, 0, 0
+    raw = "".join(out)
+    month_num = month_number_from_name(raw)
+    if month_num is None:
+        return None, 0, 0
+    consumed = i - start
+    if i < len(chars) and chars[i] == ".":
+        consumed += 1
+    return raw, consumed, month_num
+
+
+def month_number_from_name(name: str) -> int | None:
+    lookup = {
+        "january": 1,
+        "jan": 1,
+        "february": 2,
+        "feb": 2,
+        "march": 3,
+        "mar": 3,
+        "april": 4,
+        "apr": 4,
+        "may": 5,
+        "june": 6,
+        "jun": 6,
+        "july": 7,
+        "jul": 7,
+        "august": 8,
+        "aug": 8,
+        "september": 9,
+        "sep": 9,
+        "sept": 9,
+        "october": 10,
+        "oct": 10,
+        "november": 11,
+        "nov": 11,
+        "december": 12,
+        "dec": 12,
+    }
+    return lookup.get(name.lower())
+
+
+def month_name_from_number(month: int) -> str | None:
+    return {
+        1: "January",
+        2: "February",
+        3: "March",
+        4: "April",
+        5: "May",
+        6: "June",
+        7: "July",
+        8: "August",
+        9: "September",
+        10: "October",
+        11: "November",
+        12: "December",
+    }.get(month)
+
+
+def scan_exact_digits(chars: list[str], start: int, count: int) -> tuple[str, int]:
+    if start + count > len(chars):
+        return "", 0
+    out = []
+    for idx in range(count):
+        ch = chars[start + idx]
+        if not ch.isdigit():
+            return "", 0
+        out.append(ch)
+    return "".join(out), count
+
+
+def scan_day_token(chars: list[str], start: int) -> tuple[str, int]:
+    i = start
+    out: list[str] = []
+    while i < len(chars) and chars[i].isdigit():
+        out.append(chars[i])
+        i += 1
+    if not out:
+        return "", 0
+    suffix = ordinal_suffix(chars, i)
+    if suffix is not None:
+        i += len(suffix)
+    return "".join(out), i - start
+
+
+def scan_year_token(chars: list[str], start: int) -> tuple[str, int]:
+    out, consumed = scan_day_token(chars, start)
+    if len(out) == 4:
+        return out, consumed
+    return "", 0
 
 
 def match_time(chars: list[str], start: int) -> tuple[str, int] | None:

@@ -2,7 +2,8 @@
 
 use anyhow::{bail, Context, Result};
 use kokoro_tts::phonemizer::{
-    normalize_abbreviations, normalize_acronyms, normalize_cardinals, normalize_money_time,
+    normalize_abbreviations, normalize_acronyms, normalize_cardinals, normalize_dates,
+    normalize_money_time,
 };
 use std::path::PathBuf;
 
@@ -48,7 +49,7 @@ fn main() -> Result<()> {
             bail!("malformed reference line: {line}");
         };
         let got = normalize_cardinals(&normalize_acronyms(&normalize_money_time(
-            &normalize_abbreviations(case),
+            &normalize_dates(&normalize_abbreviations(case)),
         )));
         if got != expected {
             bail!("mismatch for {case:?}: rust={:?} ref={:?}", got, expected);
