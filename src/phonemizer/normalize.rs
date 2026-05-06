@@ -16,6 +16,22 @@ pub fn normalize_cardinals(text: &str) -> String {
     out
 }
 
+pub fn normalize_abbreviations(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::new();
+    let mut i = 0;
+    while i < chars.len() {
+        if let Some((replacement, consumed)) = match_abbreviation(&chars, i) {
+            out.push_str(replacement);
+            i += consumed;
+        } else {
+            out.push(chars[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
 fn parse_token(chars: &[char], start: usize) -> Option<(String, usize)> {
     let mut i = start;
     let mut negative = false;
@@ -120,6 +136,42 @@ fn parse_token(chars: &[char], start: usize) -> Option<(String, usize)> {
         return None;
     }
     Some((cardinal_phrase(&int_part, negative), i - start))
+}
+
+fn match_abbreviation(chars: &[char], start: usize) -> Option<(&'static str, usize)> {
+    const ABBREVIATIONS: &[(&str, &str)] = &[
+        ("mrs.", "Missus"),
+        ("mr.", "Mister"),
+        ("ms.", "Miz"),
+        ("dr.", "Doctor"),
+        ("prof.", "Professor"),
+        ("st.", "Saint"),
+        ("jr.", "Junior"),
+        ("sr.", "Senior"),
+        ("e.g.", "for example"),
+        ("i.e.", "that is"),
+        ("etc.", "et cetera"),
+        ("vs.", "versus"),
+        ("cf.", "compare"),
+        ("a.m.", "A M"),
+        ("p.m.", "P M"),
+    ];
+    let tail = chars.get(start..)?;
+    for (needle, replacement) in ABBREVIATIONS {
+        if tail.len() < needle.len() {
+            continue;
+        }
+        let matched = tail.get(..needle.len()).is_some_and(|prefix| {
+            prefix
+                .iter()
+                .zip(needle.chars())
+                .all(|(a, b)| a.eq_ignore_ascii_case(&b))
+        });
+        if matched {
+            return Some((*replacement, needle.len()));
+        }
+    }
+    None
 }
 
 fn is_number_boundary(chars: &[char], start: usize) -> bool {
@@ -360,7 +412,7 @@ const TENS: [&str; 10] = [
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_cardinals;
+    use super::{normalize_abbreviations, normalize_cardinals};
 
     #[test]
     fn normalizes_simple_integers() {
@@ -403,5 +455,21 @@ mod tests {
     #[test]
     fn leaves_time_like_text_for_later_stages() {
         assert_eq!(normalize_cardinals("3:45"), "3:45");
+    }
+
+    #[test]
+    fn normalizes_abbreviations_and_titles() {
+        assert_eq!(
+            normalize_abbreviations("Dr. Smith called Mr. Jones at 3 p.m."),
+            "Doctor Smith called Mister Jones at 3 P M"
+        );
+        assert_eq!(
+            normalize_abbreviations("Mrs. Lee met Ms. Kim."),
+            "Missus Lee met Miz Kim."
+        );
+        assert_eq!(
+            normalize_abbreviations("Prof. Adams lectured."),
+            "Professor Adams lectured."
+        );
     }
 }

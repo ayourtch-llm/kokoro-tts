@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Reference for stage 3.2: cardinal + ordinal + year normalization."""
+"""Reference for stage 3.3: cardinal + ordinal + year + abbreviation normalization."""
 
 from __future__ import annotations
 
@@ -48,6 +48,21 @@ CASES = [
     "On July 4th, 1776, the colonies declared independence.",
     "The year 1900 was important.",
     "In 2008, things changed.",
+    "Mr. Smith called Mrs. Jones.",
+    "Ms. Lee met Dr. Brown.",
+    "Prof. Adams lectured.",
+    "St. Louis is in Missouri.",
+    "Jr. and Sr. are suffixes.",
+    "e.g. examples help.",
+    "i.e. clarification follows.",
+    "etc. is a shorthand.",
+    "vs. is used in comparisons.",
+    "cf. compare the notes.",
+    "3 a.m.",
+    "3 p.m.",
+    "Dr. Smith called Mr. Jones at 3 p.m. on Monday.",
+    "The meeting starts at 7 a.m. on Tue.",
+    "A.M. and P.M. should be spoken as letters.",
 ]
 
 UNITS = [
@@ -88,6 +103,7 @@ TENS = [
 
 
 def normalize(text: str) -> str:
+    text = normalize_abbreviations(text)
     chars = list(text)
     out: list[str] = []
     i = 0
@@ -314,6 +330,39 @@ def convert_hundreds(n: int) -> str:
 
 def digit_to_word(ch: str) -> str:
     return UNITS[int(ch)]
+
+
+def normalize_abbreviations(text: str) -> str:
+    abbrevs = [
+        ("mrs.", "Missus"),
+        ("mr.", "Mister"),
+        ("ms.", "Miz"),
+        ("dr.", "Doctor"),
+        ("prof.", "Professor"),
+        ("st.", "Saint"),
+        ("jr.", "Junior"),
+        ("sr.", "Senior"),
+        ("e.g.", "for example"),
+        ("i.e.", "that is"),
+        ("etc.", "et cetera"),
+        ("vs.", "versus"),
+        ("cf.", "compare"),
+        ("a.m.", "A M"),
+        ("p.m.", "P M"),
+    ]
+    chars = list(text)
+    out: list[str] = []
+    i = 0
+    while i < len(chars):
+        for needle, repl in abbrevs:
+            if text[i : i + len(needle)].lower() == needle:
+                out.append(repl)
+                i += len(needle)
+                break
+        else:
+            out.append(chars[i])
+            i += 1
+    return "".join(out)
 
 
 def main() -> None:

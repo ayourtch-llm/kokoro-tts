@@ -1,5 +1,6 @@
 const ABBREVIATIONS: &[&str] = &[
-    "mrs.", "mr.", "ms.", "dr.", "st.", "jr.", "sr.", "e.g.", "i.e.", "etc.", "vs.",
+    "mrs.", "mr.", "ms.", "dr.", "prof.", "st.", "jr.", "sr.", "e.g.", "i.e.", "etc.", "vs.",
+    "cf.", "a.m.", "p.m.",
 ];
 
 pub(crate) fn split_sentences(text: &str) -> Vec<String> {
@@ -119,6 +120,14 @@ mod tests {
         assert_eq!(
             split_sentences("Hello.\n\nWorld."),
             vec!["Hello.", "World."]
+        );
+    }
+
+    #[test]
+    fn keeps_time_abbreviations_inside_sentence() {
+        assert_eq!(
+            split_sentences("Dr. Smith called Mr. Jones at 3 p.m. on Monday."),
+            vec!["Dr. Smith called Mr. Jones at 3 p.m. on Monday."]
         );
     }
 }

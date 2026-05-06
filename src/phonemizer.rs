@@ -31,6 +31,8 @@ mod misaki_gold;
 mod normalize;
 mod sentence;
 #[allow(unused_imports)]
+pub use normalize::normalize_abbreviations;
+#[allow(unused_imports)]
 pub use normalize::normalize_cardinals;
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -87,7 +89,7 @@ fn phonemize_chunk(
     gold: &misaki_gold::MisakiGoldLexicon,
     lexicon: &lexicon::Lexicon,
 ) -> String {
-    let text = normalize_cardinals(text);
+    let text = normalize_cardinals(&normalize::normalize_abbreviations(text));
     let mut out = String::new();
     for token in tokenize(text) {
         match token {
