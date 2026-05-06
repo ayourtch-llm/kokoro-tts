@@ -3,7 +3,7 @@
 use anyhow::{bail, Result};
 
 pub const MILESTONE_TEST_PHRASE: &str = "hello world";
-pub const MILESTONE_TEST_PHONEMES: &str = "həlˈoʊ wˈɜɹld";
+pub const MILESTONE_TEST_PHONEMES: &str = "həlˈoʊ wˈɜːld";
 
 pub trait Phonemizer: Send + Sync {
     fn phonemize(&self, text: &str) -> Result<String>;
@@ -22,6 +22,35 @@ impl Phonemizer for StubPhonemizer {
                 MILESTONE_TEST_PHRASE
             )
         }
+    }
+}
+
+mod arpabet;
+mod lexicon;
+
+#[derive(Debug, Default, Clone, Copy)]
+pub struct CmudictPhonemizer;
+
+impl Phonemizer for CmudictPhonemizer {
+    fn phonemize(&self, text: &str) -> Result<String> {
+        let lexicon = lexicon::lexicon();
+        let mut out = String::new();
+        for token in tokenize(text) {
+            match token {
+                Token::Word(word) => {
+                    if needs_space_before_word(&out) {
+                        out.push(' ');
+                    }
+                    let ipa = lexicon
+                        .lookup(&word)
+                        .map(arpabet::phones_to_ipa)
+                        .unwrap_or_else(|| spell_out_word(&word));
+                    out.push_str(&ipa);
+                }
+                Token::Punct(punct) => out.push(punct),
+            }
+        }
+        Ok(out)
     }
 }
 
@@ -46,9 +75,88 @@ fn normalize_for_stub(text: &str) -> String {
         .to_ascii_lowercase()
 }
 
+#[derive(Debug)]
+enum Token {
+    Word(String),
+    Punct(char),
+}
+
+fn tokenize(text: &str) -> Vec<Token> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    for ch in text.chars() {
+        if ch.is_ascii_alphabetic() || ch == '\'' || ch == '-' {
+            current.push(ch);
+        } else {
+            if !current.is_empty() {
+                tokens.push(Token::Word(std::mem::take(&mut current)));
+            }
+            if matches!(ch, ',' | '.' | '!' | '?' | ';' | ':') {
+                tokens.push(Token::Punct(ch));
+            }
+        }
+    }
+    if !current.is_empty() {
+        tokens.push(Token::Word(current));
+    }
+    tokens
+}
+
+fn needs_space_before_word(out: &str) -> bool {
+    match out.chars().last() {
+        None => false,
+        Some(' ' | '(' | '[' | '{' | '“' | '‘' | '—' | '…') => false,
+        Some(_) => true,
+    }
+}
+
+fn spell_out_word(word: &str) -> String {
+    let mut out = String::new();
+    for ch in word.chars() {
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        let letter = match ch.to_ascii_lowercase() {
+            'a' => "eɪ",
+            'b' => "bi",
+            'c' => "si",
+            'd' => "di",
+            'e' => "i",
+            'f' => "ɛf",
+            'g' => "dʒi",
+            'h' => "eɪʧ",
+            'i' => "aɪ",
+            'j' => "dʒeɪ",
+            'k' => "keɪ",
+            'l' => "ɛl",
+            'm' => "ɛm",
+            'n' => "ɛn",
+            'o' => "oʊ",
+            'p' => "pi",
+            'q' => "kju",
+            'r' => "ɑɹ",
+            's' => "ɛs",
+            't' => "ti",
+            'u' => "ju",
+            'v' => "vi",
+            'w' => "dʌbəlju",
+            'x' => "ɛks",
+            'y' => "waɪ",
+            'z' => "zi",
+            _ => continue,
+        };
+        out.push_str(letter);
+    }
+    if out.is_empty() {
+        word.to_string()
+    } else {
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Phonemizer, StubPhonemizer, MILESTONE_TEST_PHONEMES};
+    use super::{CmudictPhonemizer, Phonemizer, StubPhonemizer, MILESTONE_TEST_PHONEMES};
 
     #[test]
     fn stub_returns_canned_ipa_for_milestone_phrase() {
@@ -61,5 +169,13 @@ mod tests {
     #[test]
     fn stub_rejects_unknown_text() {
         assert!(StubPhonemizer.phonemize("different text").is_err());
+    }
+
+    #[test]
+    fn cmudict_returns_canned_ipa_for_milestone_phrase() {
+        assert_eq!(
+            CmudictPhonemizer.phonemize("hello world").unwrap(),
+            MILESTONE_TEST_PHONEMES
+        );
     }
 }
