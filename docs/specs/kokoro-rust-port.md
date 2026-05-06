@@ -45,10 +45,10 @@ reference voice tensor ref_s [1, 256]   (loaded per-utterance, indexed by phonem
 input_ids ──► standalone TextEncoder (embed → CNN×3 → BiLSTM) ──► t_en [B, 512, T]
                                                                    └─► @ pred_aln_trg ──► asr [B, 512, sum(pred_dur)]
 
-(asr, F0_pred, N_pred, s_dec) ──► Decoder ──► waveform [B, 1, sum(pred_dur)*300]   @ 24 kHz
+(asr, F0_pred, N_pred, s_dec) ──► Decoder ──► waveform [B, sum(pred_dur)*600]   @ 24 kHz
 ```
 
-The decoder's final upsampling factor is 300 (gen_istft_hop_size × upsample_rates product). 1 frame of duration ≈ 300 audio samples ≈ 12.5 ms.
+**Decoder→audio amplification is 600×** per `sum(pred_dur)` frame, not 300× as an earlier draft of this spec claimed. The factor decomposes as: 2× from the decoder's terminal `decode.3` AdainResBlk1d (`upsample=true`) × 60× from the Generator's `ups` ConvTranspose1d stack (`prod(upsample_rates) = 10*6`) × 5× from the iSTFT (`gen_istft_hop_size`). 1 phoneme-frame ≈ 600 audio samples ≈ 25 ms @ 24 kHz. Stage-12 receipt confirms: 63 phoneme-frames × 600 = 37800 samples = 1.575 s.
 
 ## 3. What works (don't redo)
 
@@ -175,7 +175,8 @@ Pulled directly from `hexgrad/Kokoro-82M/config.json` so codex doesn't have to w
 | `n_token` | `178` | vocab size for embeddings |
 
 Derived:
-- Total upsample factor: `prod(upsample_rates) * gen_istft_hop_size = 10 * 6 * 5 = 300` audio samples per duration frame (matches the §2 architecture note: 1 frame ≈ 12.5 ms @ 24 kHz).
+- **Generator-internal** upsample factor: `prod(upsample_rates) * gen_istft_hop_size = 10 * 6 * 5 = 300` (this is the F0-upsampling scale and the per-input-frame amplification *inside the generator*).
+- **Total decoder→audio** upsample factor: `2 * 300 = 600`. The 2× comes from the decoder front-end's terminal `decode.3` AdainResBlk1d which upsamples (verified at stage 9: decoder front-end output is `[B, 512, 2*sum(pred_dur)]`, then generator turns each of those frames into 300 audio samples). 1 phoneme-frame ≈ 600 audio samples = 25 ms @ 24 kHz.
 - Generator channel progression: `512 → 256 → 128` (`upsample_initial_channel // 2^i`). `ch` after stage 0 = 256, after stage 1 = 128.
 - Total `Generator.resblocks` instances: `num_upsamples * num_kernels = 2 * 3 = 6` (state-dict keys `resblocks.{0..5}.*`).
 - For `noise_convs[0]` (i=0, not last stage): `stride_f0 = prod(upsample_rates[1:]) = 6`, kernel = `12`, padding = `(6+1)//2 = 3`, in_ch = `gen_istft_n_fft + 2 = 22`, out_ch = `256`.
@@ -413,7 +414,9 @@ Fill this in as you go. Same format as `~/rust/nemotron-speech/state.md`. Number
 | 10b. Upsampler stage 1 | — | — | |
 | 11. CustomSTFT Rust vs Python (synthetic) | 8.941e-8 | — | release checker; gate is Rust-vs-Python output equivalence, NOT round-trip (CustomSTFT is approximate by design — ~3.6% input-vs-round-trip error is correct upstream behavior) |
 | 11b. CustomSTFT Rust vs Python (real spectrogram) | — | — | |
-| 12. End-to-end waveform | — | — | **milestone 1 gate** |
+| 10. AdaINResBlock1 (resblocks.0, k=3, [1,3,5]) | 4.673e-5 | 5.649e-6 | release checker, shape `[1, 256, 37]` — 21x under 1e-3 target |
+| 10b. Generator full forward | 5.213e1 | 4.614e-1 | release checker, shape `[1, 2400]` (max_ref=2.488e4 → 2.1e-3 relative) — random-input test exaggerates absolute scale; precision floor is candle-vs-torch conv1d sub-precision noise propagating through atan2-based phase |
+| 12. End-to-end waveform | "Hello world." | — | **milestone 1 gate ACHIEVED**: speak.rs CLI on "həlˈoʊ wˈɜɹld" produces 37800 samples (1.575s @ 24 kHz, max_abs=0.3414, 1.13x realtime CPU). nemotron-speech ASR round-trip transcribes the output as "Hello world." Audio is intelligible and correct. |
 
 ## 10. Don't do
 
