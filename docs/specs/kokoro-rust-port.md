@@ -319,7 +319,7 @@ Codex landed the fold strategy at stage 5 (CnnBlock fix in `679ed97`, validated 
 
 ### 5.7. Implementation order suggestion
 
-1. Port `CustomSTFT` standalone, validate forward+inverse round-trip vs upstream `CustomSTFT` (not `torch.istft`) to ≤1e-5 on a synthetic input. This is small, contained, and gates everything else.
+1. Port `CustomSTFT` standalone. **Validation gate is Rust-vs-Python output equivalence, NOT round-trip recovery.** Run upstream `CustomSTFT.transform()` and `.inverse()` on a fixed synthetic input, dump the outputs, then run the Rust port on the same input and diff against the dumped Python outputs to ≤1e-4 max abs. Do not validate by checking that `inverse(transform(x)) ≈ x` — `CustomSTFT` is an *approximate* iSTFT by design (custom_stft.py:79 explicitly notes "good approximate reconstruction with Hann + typical overlap" — it skips the DC/Nyquist non-doubling correction a textbook real iSTFT does), so a pure-waveform round-trip is bounded by ~3.6% error regardless of port correctness. The porting gate measures "does the Rust impl produce the same numbers as the Python impl on the same input?" — that's what stage-11 receipts confirm. Codex's stage-11a receipt validates this empirically: Rust-vs-Python max_abs=8.941e-8 on synthetic input, while the same CustomSTFT's input-vs-output round-trip is ~3.6% off the original waveform (and that's correct upstream behavior, not a port bug).
 2. Port `SineGen` + `SourceModuleHnNSF`, validate `har_source` output against upstream on a fixed F0 contour. The cumsum precision matters — diff should be ≤1e-3 abs.
 3. Port `Snake1D` activation as a free function or a small struct holding `alpha`. Validate vs upstream on random input.
 4. Port `AdaINResBlock1` (the 3-block-with-Snake one). Validate one block in isolation with random style + features.
@@ -365,7 +365,7 @@ The pattern that worked on `~/rust/nemotron-speech` is the same pattern here. Re
 | 8 | F0/N prediction | (d_en@aln, s_pred) | each `[1, sum(dur)]` | 1e-3 |
 | 9 | Decoder pre-vocoder (asr+f0+n fusion) | all of the above | `[1, C, sum(dur)]` | 1e-4 |
 | 10 | iSTFTNet upsampler stages | decoder features | per-stage shapes | 1e-3 |
-| 11 | Inverse STFT | complex spectrogram | `[1, sum(dur)*300]` | 1e-4 |
+| 11 | CustomSTFT (Rust vs Python) | synthetic / real spectrogram | `[1, sum(dur)*300]` | 1e-4 (Rust vs Python; **NOT** input-vs-round-trip — CustomSTFT is approximate by design, ~3.6% round-trip error is expected upstream behavior) |
 | 12 | Full forward | text | waveform `[1, N_samples]` | 1e-3 |
 
 These targets are starting estimates from the nemotron-speech experience; tighten them as receipts come in. Do not relax them silently — if a stage refuses to converge, find the bug, don't bump the threshold.
@@ -411,8 +411,8 @@ Fill this in as you go. Same format as `~/rust/nemotron-speech/state.md`. Number
 | 9. Decoder fusion | 5.531e-5 | 2.929e-6 | release checker, shape `[1, 512, 126]`; decoder shortcut upsample is nearest-neighbor, residual path uses ConvTranspose pool |
 | 10. Upsampler stage 0 | — | — | |
 | 10b. Upsampler stage 1 | — | — | |
-| 11. Inverse STFT (synthetic) | — | — | |
-| 11b. Inverse STFT (real spectrogram) | — | — | |
+| 11. CustomSTFT Rust vs Python (synthetic) | 8.941e-8 | — | release checker; gate is Rust-vs-Python output equivalence, NOT round-trip (CustomSTFT is approximate by design — ~3.6% input-vs-round-trip error is correct upstream behavior) |
+| 11b. CustomSTFT Rust vs Python (real spectrogram) | — | — | |
 | 12. End-to-end waveform | — | — | **milestone 1 gate** |
 
 ## 10. Don't do
