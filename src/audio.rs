@@ -243,6 +243,16 @@ impl StreamingAudioOutput {
         Ok(())
     }
 
+    pub fn flush_queue(&self) -> Result<()> {
+        self.check_error()?;
+        let mut guard = self.state.lock().expect("streaming mutex poisoned");
+        guard.samples.clear();
+        if let Some(reference) = guard.reference.as_mut() {
+            reference.flush_queue();
+        }
+        Ok(())
+    }
+
     fn warn_if_backlogged(&self, queued_seconds: f64) {
         if queued_seconds >= STREAM_BACKLOG_WARN_SECONDS {
             tracing::warn!(
@@ -314,6 +324,13 @@ impl ReferenceStreamState {
         self.packet.fill(0);
         self.packet_samples = 0;
         Ok(())
+    }
+
+    fn flush_queue(&mut self) {
+        self.samples.clear();
+        self.packet.fill(0);
+        self.packet_samples = 0;
+        self.reference_credit = 0.0;
     }
 }
 

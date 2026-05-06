@@ -298,7 +298,22 @@ fn handle_http_stream(stream: &mut TcpStream, shared: &SharedState) -> Result<()
         }
     }
 
-    if method != "POST" || path != "/calibrate" {
+    if method != "POST" {
+        write_http_response(stream, 404, "not found")?;
+        return Ok(());
+    }
+
+    if path == "/flush" {
+        shared
+            .audio
+            .flush_queue()
+            .context("flushing playback queue")?;
+        tracing::info!("queue flushed");
+        write_http_response(stream, 200, "ok")?;
+        return Ok(());
+    }
+
+    if path != "/calibrate" {
         write_http_response(stream, 404, "not found")?;
         return Ok(());
     }
