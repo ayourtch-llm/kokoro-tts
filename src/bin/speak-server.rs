@@ -163,7 +163,7 @@ fn run_event_loop(
             loop {
                 match listener.accept() {
                     Ok((mut stream, peer)) => {
-                        if let Err(err) = handle_http_stream(&mut stream, shared) {
+                        if let Err(err) = handle_http_stream(&mut stream, shared, udp_socket) {
                             tracing::warn!(
                                 %http_addr,
                                 %peer,
@@ -261,7 +261,11 @@ fn process_phrase(shared: &SharedState, text: &str) -> Result<ProcessReceipt> {
     })
 }
 
-fn handle_http_stream(stream: &mut TcpStream, shared: &SharedState) -> Result<()> {
+fn handle_http_stream(
+    stream: &mut TcpStream,
+    shared: &SharedState,
+    udp_socket: &UdpSocket,
+) -> Result<()> {
     stream
         .set_nonblocking(false)
         .context("setting accepted http stream blocking")?;
@@ -308,7 +312,12 @@ fn handle_http_stream(stream: &mut TcpStream, shared: &SharedState) -> Result<()
             .audio
             .flush_queue()
             .context("flushing playback queue")?;
-        tracing::info!("queue flushed");
+        let drained =
+            drain_pending_datagrams(udp_socket).context("draining pending UDP datagrams")?;
+        tracing::info!(
+            drained_datagrams = drained,
+            "queue flushed (drained pending datagrams from UDP socket)"
+        );
         write_http_response(stream, 200, "ok")?;
         return Ok(());
     }
@@ -358,6 +367,18 @@ fn handle_http_stream(stream: &mut TcpStream, shared: &SharedState) -> Result<()
     log_reference_queue(&receipt);
     write_http_response(stream, 200, "ok")?;
     Ok(())
+}
+
+fn drain_pending_datagrams(socket: &UdpSocket) -> Result<usize> {
+    let mut drained = 0usize;
+    let mut buf = [0u8; 8192];
+    loop {
+        match socket.recv_from(&mut buf) {
+            Ok((_len, _peer)) => drained += 1,
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => return Ok(drained),
+            Err(err) => return Err(err).context("draining UDP socket"),
+        }
+    }
 }
 
 fn log_reference_queue(receipt: &ProcessReceipt) {
