@@ -7,6 +7,10 @@ pub const MILESTONE_TEST_PHONEMES: &str = "həlˈO wˈɜɹld";
 
 pub trait Phonemizer: Send + Sync {
     fn phonemize(&self, text: &str) -> Result<String>;
+
+    fn phonemize_chunks(&self, text: &str) -> Result<Vec<String>> {
+        Ok(vec![self.phonemize(text)?])
+    }
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -50,18 +54,18 @@ pub struct TwoTierPhonemizer;
 
 impl Phonemizer for TwoTierPhonemizer {
     fn phonemize(&self, text: &str) -> Result<String> {
+        Ok(self.phonemize_chunks(text)?.join(" "))
+    }
+
+    fn phonemize_chunks(&self, text: &str) -> Result<Vec<String>> {
         let gold = misaki_gold::lexicon();
         let lexicon = lexicon::lexicon();
-        let mut out = String::new();
+        let mut out = Vec::new();
         for sentence in sentence::split_sentences(text) {
             let sentence_out = phonemize_chunk(&sentence, gold, lexicon);
-            if sentence_out.is_empty() {
-                continue;
+            if !sentence_out.is_empty() {
+                out.push(sentence_out);
             }
-            if !out.is_empty() {
-                out.push(' ');
-            }
-            out.push_str(&sentence_out);
         }
         Ok(out)
     }
