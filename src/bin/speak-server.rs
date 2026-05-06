@@ -130,8 +130,9 @@ fn main() -> Result<()> {
 
     let udp_queue = queue.clone();
     let udp_socket = Arc::clone(&socket);
+    let udp_audio = audio.clone();
     thread::spawn(move || {
-        if let Err(err) = run_udp_listener(udp_socket, udp_queue) {
+        if let Err(err) = run_udp_listener(udp_socket, udp_queue, udp_audio) {
             tracing::error!(error = %err, "udp listener exited");
         }
     });
@@ -264,7 +265,11 @@ impl SynthQueue {
     }
 }
 
-fn run_udp_listener(socket: Arc<UdpSocket>, queue: SynthQueue) -> Result<()> {
+fn run_udp_listener(
+    socket: Arc<UdpSocket>,
+    queue: SynthQueue,
+    audio: StreamingAudioHandle,
+) -> Result<()> {
     let mut udp_buf = [0u8; 8192];
     loop {
         match socket.recv_from(&mut udp_buf) {
@@ -275,6 +280,17 @@ fn run_udp_listener(socket: Arc<UdpSocket>, queue: SynthQueue) -> Result<()> {
                     .to_string();
                 if text.is_empty() {
                     tracing::info!(%peer, "skipping empty datagram");
+                    continue;
+                }
+
+                if text == "[FLUSH]" {
+                    let drained_requests = queue.flush_pending();
+                    audio.flush_queue().context("flushing playback queue")?;
+                    tracing::info!(
+                        %peer,
+                        drained_requests,
+                        "queue flushed via UDP sentinel"
+                    );
                     continue;
                 }
 
