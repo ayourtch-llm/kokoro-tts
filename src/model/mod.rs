@@ -18,6 +18,29 @@ use self::decoder::Decoder;
 use self::predictor::ProsodyPredictor;
 use self::text_encoder::TextEncoder;
 
+pub fn alignment_from_durations(durations: &[i64]) -> Result<Vec<Vec<f32>>> {
+    let total_frames = durations.iter().try_fold(0usize, |acc, &duration| {
+        let duration = usize::try_from(duration).map_err(|_| {
+            candle_core::Error::Msg(format!("negative duration {duration} is invalid"))
+        })?;
+        acc.checked_add(duration).ok_or_else(|| {
+            candle_core::Error::Msg("duration frame count overflowed usize".to_string())
+        })
+    })?;
+    let mut alignment = vec![vec![0.0f32; total_frames]; durations.len()];
+    let mut cursor = 0usize;
+    for (token_idx, &duration) in durations.iter().enumerate() {
+        let duration = usize::try_from(duration).map_err(|_| {
+            candle_core::Error::Msg(format!("negative duration {duration} is invalid"))
+        })?;
+        for frame_idx in cursor..cursor + duration {
+            alignment[token_idx][frame_idx] = 1.0;
+        }
+        cursor += duration;
+    }
+    Ok(alignment)
+}
+
 /// Full Kokoro model
 pub struct Kokoro {
     bert: CustomAlbert,

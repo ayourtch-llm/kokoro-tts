@@ -361,7 +361,7 @@ Fill this in as you go. Same format as `~/rust/nemotron-speech/state.md`. Number
 | 5. TextEncoder | 2.161e-6 | 9.375e-8 | release checker, shape `[1, 512, 15]`; validates CNN weight-norm fold + channel LayerNorm + BiLSTM |
 | 6. predict_duration logits | 1.144e-5 | 2.248e-6 | release checker, shape `[1, 15, 50]`; uses upstream-verified predictor style half `ref_s[:, 128:]` |
 | 6b. Integer durations | exact | exact | `[17, 2, 2, 2, 2, 2, 2, 2, 1, 2, 2, 4, 3, 12, 8]` |
-| 7. Alignment matrix | — | — | exact match required |
+| 7. Alignment matrix | exact | exact | shape `[15, 63]`, zero mismatches |
 | 8. F0 prediction | — | — | |
 | 8b. N prediction | — | — | |
 | 9. Decoder fusion | — | — | |
