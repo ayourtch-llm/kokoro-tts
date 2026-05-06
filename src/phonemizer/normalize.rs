@@ -32,6 +32,22 @@ pub fn normalize_abbreviations(text: &str) -> String {
     out
 }
 
+pub fn normalize_acronyms(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::new();
+    let mut i = 0;
+    while i < chars.len() {
+        if let Some((replacement, consumed)) = match_acronym(&chars, i) {
+            out.push_str(&replacement);
+            i += consumed;
+        } else {
+            out.push(chars[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
 fn parse_token(chars: &[char], start: usize) -> Option<(String, usize)> {
     let mut i = start;
     let mut negative = false;
@@ -172,6 +188,68 @@ fn match_abbreviation(chars: &[char], start: usize) -> Option<(&'static str, usi
         }
     }
     None
+}
+
+fn match_acronym(chars: &[char], start: usize) -> Option<(String, usize)> {
+    let tail = chars.get(start..)?;
+    let mut end = 0usize;
+    while let Some(ch) = tail.get(end) {
+        if ch.is_ascii_alphabetic() {
+            end += 1;
+            continue;
+        }
+        if *ch == '\'' && matches!(tail.get(end + 1), Some('s' | 'S')) {
+            end += 2;
+            break;
+        }
+        break;
+    }
+    if end == 0 {
+        return None;
+    }
+    let token: String = tail[..end].iter().collect();
+    let Some((base, possessive)) = split_possessive(&token) else {
+        return None;
+    };
+    if !is_all_caps_acronym(base) {
+        return None;
+    }
+    if possessive || is_pronounce_as_word_acronym(base) {
+        Some((token, end))
+    } else {
+        let replacement = spaced_letters(base);
+        Some((replacement, end))
+    }
+}
+
+fn split_possessive(token: &str) -> Option<(&str, bool)> {
+    if token.len() > 2 && (token.ends_with("'s") || token.ends_with("'S")) {
+        Some((&token[..token.len() - 2], true))
+    } else {
+        Some((token, false))
+    }
+}
+
+pub fn is_pronounce_as_word_acronym(word: &str) -> bool {
+    matches!(
+        word,
+        "NASA" | "NATO" | "RADAR" | "ASCII" | "JSON" | "ASAP" | "FAQ" | "PIN"
+    )
+}
+
+pub fn is_all_caps_acronym(word: &str) -> bool {
+    word.len() >= 2 && word.chars().all(|ch| ch.is_ascii_uppercase())
+}
+
+fn spaced_letters(word: &str) -> String {
+    let mut out = String::new();
+    for (idx, ch) in word.chars().enumerate() {
+        if idx > 0 {
+            out.push(' ');
+        }
+        out.push(ch);
+    }
+    out
 }
 
 fn is_number_boundary(chars: &[char], start: usize) -> bool {
@@ -412,7 +490,7 @@ const TENS: [&str; 10] = [
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_abbreviations, normalize_cardinals};
+    use super::{normalize_abbreviations, normalize_acronyms, normalize_cardinals};
 
     #[test]
     fn normalizes_simple_integers() {
@@ -471,5 +549,29 @@ mod tests {
             normalize_abbreviations("Prof. Adams lectured."),
             "Professor Adams lectured."
         );
+    }
+
+    #[test]
+    fn normalizes_acronyms_for_spell_by_default_cases() {
+        assert_eq!(normalize_acronyms("FBI"), "F B I");
+        assert_eq!(normalize_acronyms("CIA"), "C I A");
+        assert_eq!(normalize_acronyms("USA"), "U S A");
+        assert_eq!(normalize_acronyms("SQL"), "S Q L");
+        assert_eq!(normalize_acronyms("HTML"), "H T M L");
+        assert_eq!(normalize_acronyms("USB"), "U S B");
+    }
+
+    #[test]
+    fn keeps_pronounce_as_word_acronyms_unchanged() {
+        assert_eq!(normalize_acronyms("NASA"), "NASA");
+        assert_eq!(normalize_acronyms("NATO"), "NATO");
+        assert_eq!(normalize_acronyms("RADAR"), "RADAR");
+        assert_eq!(normalize_acronyms("JSON"), "JSON");
+    }
+
+    #[test]
+    fn keeps_possessive_acronyms_intact_for_phonemizer() {
+        assert_eq!(normalize_acronyms("NASA's"), "NASA's");
+        assert_eq!(normalize_acronyms("FBI's"), "FBI's");
     }
 }

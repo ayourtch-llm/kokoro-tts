@@ -33,6 +33,8 @@ mod sentence;
 #[allow(unused_imports)]
 pub use normalize::normalize_abbreviations;
 #[allow(unused_imports)]
+pub use normalize::normalize_acronyms;
+#[allow(unused_imports)]
 pub use normalize::normalize_cardinals;
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -89,7 +91,9 @@ fn phonemize_chunk(
     gold: &misaki_gold::MisakiGoldLexicon,
     lexicon: &lexicon::Lexicon,
 ) -> String {
-    let text = normalize_cardinals(&normalize::normalize_abbreviations(text));
+    let text = normalize_cardinals(&normalize::normalize_acronyms(
+        &normalize::normalize_abbreviations(text),
+    ));
     let mut out = String::new();
     for token in tokenize(text) {
         match token {
@@ -97,17 +101,72 @@ fn phonemize_chunk(
                 if needs_space_before_word(&out) {
                     out.push(' ');
                 }
-                let ipa = gold
-                    .lookup(&word)
-                    .map(str::to_owned)
-                    .or_else(|| lexicon.lookup(&word).map(arpabet::phones_to_ipa))
-                    .unwrap_or_else(|| spell_out_word(&word));
+                let ipa = phonemize_word(&word, gold, lexicon);
                 out.push_str(&ipa);
             }
             Token::Punct(punct) => out.push(punct),
         }
     }
     out
+}
+
+fn phonemize_word(
+    word: &str,
+    gold: &misaki_gold::MisakiGoldLexicon,
+    lexicon: &lexicon::Lexicon,
+) -> String {
+    if let Some((base, possessive)) = split_possessive_acronym(word) {
+        if normalize::is_pronounce_as_word_acronym(base) {
+            let mut ipa = pronounce_or_spell_acronym(base, gold, lexicon);
+            if possessive {
+                ipa.push('z');
+            }
+            return ipa;
+        }
+        if normalize::is_all_caps_acronym(base) {
+            let mut ipa = spell_out_word(base);
+            if possessive {
+                ipa.push('z');
+            }
+            return ipa;
+        }
+    }
+    if normalize::is_all_caps_acronym(word) && normalize::is_pronounce_as_word_acronym(word) {
+        return pronounce_or_spell_acronym(word, gold, lexicon);
+    }
+    if normalize::is_all_caps_acronym(word) {
+        return spell_out_word(word);
+    }
+    gold.lookup(&word)
+        .map(str::to_owned)
+        .or_else(|| lexicon.lookup(&word).map(arpabet::phones_to_ipa))
+        .unwrap_or_else(|| spell_out_word(&word))
+}
+
+fn pronounce_or_spell_acronym(
+    word: &str,
+    gold: &misaki_gold::MisakiGoldLexicon,
+    lexicon: &lexicon::Lexicon,
+) -> String {
+    let upper = word.to_ascii_uppercase();
+    match upper.as_str() {
+        "JSON" => "ˈdʒeɪsən".to_string(),
+        "FAQ" => "fæk".to_string(),
+        _ => gold
+            .lookup(&upper)
+            .map(str::to_owned)
+            .or_else(|| lexicon.lookup(&upper).map(arpabet::phones_to_ipa))
+            .unwrap_or_else(|| spell_out_word(word)),
+    }
+}
+
+fn split_possessive_acronym(word: &str) -> Option<(&str, bool)> {
+    if let Some(base) = word.strip_suffix("'s").or_else(|| word.strip_suffix("'S")) {
+        if normalize::is_all_caps_acronym(base) {
+            return Some((base, true));
+        }
+    }
+    None
 }
 
 fn tokenize(text: String) -> Vec<Token> {
@@ -219,5 +278,11 @@ mod tests {
                 .unwrap(),
             "həlˈO wˈɜɹld. həlˈO wˈɜɹld?"
         );
+    }
+
+    #[test]
+    fn two_tier_handles_acronyms_and_possessives() {
+        assert_eq!(TwoTierPhonemizer.phonemize("NASA's").unwrap(), "nˈæsəz");
+        assert_eq!(TwoTierPhonemizer.phonemize("FBI's").unwrap(), "ɛf bi aɪz");
     }
 }

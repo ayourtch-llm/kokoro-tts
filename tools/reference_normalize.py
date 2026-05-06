@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Reference for stage 3.3: cardinal + ordinal + year + abbreviation normalization."""
+"""Reference for stage 3.4: cardinal + ordinal + year + abbreviation + acronym normalization."""
 
 from __future__ import annotations
 
@@ -63,6 +63,12 @@ CASES = [
     "Dr. Smith called Mr. Jones at 3 p.m. on Monday.",
     "The meeting starts at 7 a.m. on Tue.",
     "A.M. and P.M. should be spoken as letters.",
+    "NASA launched the FBI's new HTML parser by 3 p.m.",
+    "NATO and RADAR are pronounceable acronyms.",
+    "ASCII JSON ASAP FAQ PIN are common pronounce-as-word cases.",
+    "FBI CIA USA SQL HTML CSS USB should spell out.",
+    "NASA's mission succeeded.",
+    "The SQL query used JSON and FAQ docs.",
 ]
 
 UNITS = [
@@ -104,6 +110,7 @@ TENS = [
 
 def normalize(text: str) -> str:
     text = normalize_abbreviations(text)
+    text = normalize_acronyms(text)
     chars = list(text)
     out: list[str] = []
     i = 0
@@ -362,6 +369,29 @@ def normalize_abbreviations(text: str) -> str:
         else:
             out.append(chars[i])
             i += 1
+    return "".join(out)
+
+
+def normalize_acronyms(text: str) -> str:
+    pronounce = {"NASA", "NATO", "RADAR", "ASCII", "JSON", "ASAP", "FAQ", "PIN"}
+    chars = list(text)
+    out: list[str] = []
+    i = 0
+    while i < len(chars):
+        j = i
+        while j < len(chars) and chars[j].isalpha():
+            j += 1
+        if j - i >= 2:
+            token = text[i:j]
+            if token.isupper() and not (j + 1 < len(chars) and chars[j] == "'" and chars[j + 1] in {"s", "S"}):
+                if token in pronounce:
+                    out.append(token)
+                else:
+                    out.append(" ".join(token))
+                i = j
+                continue
+        out.append(chars[i])
+        i += 1
     return "".join(out)
 
 

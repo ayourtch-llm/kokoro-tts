@@ -1,7 +1,7 @@
 //! Validate stage-3 cardinal-number normalization against `tools/reference_normalize.py`.
 
 use anyhow::{bail, Context, Result};
-use kokoro_tts::phonemizer::{normalize_abbreviations, normalize_cardinals};
+use kokoro_tts::phonemizer::{normalize_abbreviations, normalize_acronyms, normalize_cardinals};
 use std::path::PathBuf;
 
 #[derive(Debug)]
@@ -45,7 +45,7 @@ fn main() -> Result<()> {
         let Some((case, expected)) = line.split_once('\t') else {
             bail!("malformed reference line: {line}");
         };
-        let got = normalize_cardinals(&normalize_abbreviations(case));
+        let got = normalize_cardinals(&normalize_acronyms(&normalize_abbreviations(case)));
         if got != expected {
             bail!("mismatch for {case:?}: rust={:?} ref={:?}", got, expected);
         }
