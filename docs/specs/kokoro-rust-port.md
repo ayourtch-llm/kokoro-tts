@@ -120,6 +120,10 @@ The encode + 4-decode-block pipeline structure matches upstream Decoder (istftne
 - **`decoder.rs::AdaIN1d` affine — RETRACTED, codex's original no-affine code is correct.** I previously flagged this as a "silent param skip" bug (the original review queue item #6) on the grounds that `istftnet.py:24` has `nn.InstanceNorm1d(num_features, affine=True)`. After actually inspecting the trained checkpoint: the `kokoro-v1_0.pth` has **zero** `*.norm.weight`/`*.norm.bias` keys for predictor or decoder (verified by direct `torch.load` of the .pth and grep of the converted safetensors header — both empty). Upstream's `affine=True` is dead code at inference: PyTorch initializes those params to ones/zeros by default, upstream's load uses `strict=False` fallback so missing keys leave defaults in place, and `IN(x)*1 + 0` is mathematically `IN(x)`. The actual scale/shift comes entirely from `(1 + style_gamma) * IN(x) + style_beta` where gamma/beta are produced by the AdaIN1d's `fc` Linear (which IS in the state-dict). **Action**: revert commit `6a6be6c` (which added `vb.get(num_features, "norm.weight")?` calls to `decoder.rs::AdaIN1d::load` and `predictor.rs::Adain1d::load`); those `vb.get(...)?` calls will fail strict-load the moment the full Kokoro::load actually instantiates F0/N or decoder AdaIN1d (stage 8 onwards). Codex's pre-6a6be6c implementation was right.
 - `decoder.rs::Decoder::load` channel arithmetic `1024 + 2 + 64` matches upstream (istftnet.py:396-399). No fix needed there.
 - `decoder.rs::Decoder::forward` fusion logic verified against upstream (istftnet.py:407-421) line-for-line: `f0_conv(f0.unsqueeze(1))` → `n_conv(n.unsqueeze(1))` → `cat([asr, f0, n], dim=1)` → `encode(x, s)` → loop with `res` flag controlling whether to re-cat `[x, asr_res, f0, n]` before each `block(x, s)` → flip `res = false` after the upsample block. Identical structure. No fix needed in the forward body — the only outstanding work here is appending the Generator call after the decode loop (see §5).
+- **AdainResBlk1d uses two distinct upsamplers** (codex caught this at stage 9; verified against `istftnet.py:340-381`):
+  - `_shortcut` path uses `self.upsample` = `UpSample1d` (nearest-neighbor 2× via `F.interpolate(scale_factor=2, mode='nearest')`, no learnable params), then optional `conv1x1` for dim mismatch.
+  - `_residual` path uses `self.pool` = `weight_norm(ConvTranspose1d(dim_in, dim_in, kernel=3, stride=2, groups=dim_in, padding=1, output_padding=1))` when upsample, `nn.Identity()` otherwise.
+  - Don't substitute one for the other — the shortcut's nearest-neighbor and the residual's learned ConvTranspose produce different upsamplings, and their sum after `* rsqrt(2)` is the block output. Codex's stage-9 receipt validated this is now correct in `decoder.rs`.
 
 ### `src/model/mod.rs` — bails after duration
 
@@ -135,6 +139,21 @@ The encode + 4-decode-block pipeline structure matches upstream Decoder (istftne
 The heaviest single piece. The decoder front-end (asr + f0 + n + style fusion through 4 AdainResBlk1d) produces conditioned features; the **Generator** (`istftnet.py:257-326`) turns those into a waveform via an NSF source + multi-stage upsampling + iSTFT. Currently entirely absent in `decoder.rs`.
 
 Read `kokoro/istftnet.py` (421 lines) end-to-end before writing. The key insights from that read are below — they're load-bearing and several are not obvious from "iSTFTNet" alone.
+
+**State-dict prefix:** Generator is a submodule of Decoder, so all keys live under `decoder.generator.<...>` in the converted safetensors. From the Rust side, `Generator::load` should be called with `vb.pp("generator")` from inside `Decoder::load`. The exhaustive submodule layout (verified against the actual safetensors header):
+
+| Submodule | Key count | Notes |
+|-----------|-----------|-------|
+| `m_source.l_linear` | 2 | `Linear(harmonic_num+1=9, 1)`. SineGen itself is stateless (no params, only buffers/computation). |
+| `f0_upsamp` | 0 | `nn.Upsample(scale_factor=300, mode='nearest')` — no params. |
+| `reflection_pad` | 0 | `nn.ReflectionPad1d((1, 0))` — no params. |
+| `noise_convs.{0,1}` | 4 | Plain Conv1d, **NOT weight-normed** (just `.weight` + `.bias`). |
+| `noise_res.{0,1}` | 72 | Two `AdaINResBlock1` instances (36 keys each). `.0` has ch=256, kernel=7; `.1` has ch=128, kernel=11. |
+| `ups.{0,1}` | 6 | Weight-normed `ConvTranspose1d`. `.0`: in=512, out=256, kernel=20, stride=10. `.1`: in=256, out=128, kernel=12, stride=6. |
+| `resblocks.{0..5}` | 216 | Six `AdaINResBlock1` instances. Indexed `i*3+j` where `i` is upsample stage (0 or 1) and `j` is MRF kernel index (0=k3, 1=k7, 2=k11). Stages 0-2 have ch=256; stages 3-5 have ch=128. |
+| `conv_post` | 3 | Weight-normed `Conv1d(128, 22, kernel=7)`. Output is the `[B, 22, T]` magnitude+phase spectrogram. |
+
+Total: 303 keys under `decoder.generator.*`. Each `AdaINResBlock1` instance has exactly 36 keys: 6 conv weight_g/weight_v/bias triples (3×convs1 + 3×convs2), 6 AdaIN1d fc weight/bias pairs (3×adain1 + 3×adain2), 6 alpha tensors (3×alpha1 + 3×alpha2). Sanity-check this count when implementing — a missing alpha will silently shape-mismatch at runtime, not at load.
 
 ### 5.0. Concrete constants for Kokoro-82M
 
@@ -268,17 +287,35 @@ Two upstream options, both implemented in istftnet.py:
 
 Constants from Kokoro's config: `gen_istft_n_fft = 20`, `gen_istft_hop_size = 5` (verify by reading `models/config.json` after download). Window is Hann, periodic, dtype f32.
 
-### 5.6. Weight normalization — pervasive
+### 5.6. Weight normalization — pervasive but with exceptions
 
-Upstream applies weight-norm to every `Conv1d` and `ConvTranspose1d` in the decoder + generator + TextEncoder.cnn. **Convention check (verified against the actual `kokoro-v1_0.pth`):** the trained checkpoint uses the **deprecated `torch.nn.utils.weight_norm`** API — state-dict keys are `<conv>.weight_g` (magnitude scalar, shape `[out_ch, 1, 1]`) and `<conv>.weight_v` (direction, shape `[out_ch, in_ch, kernel]`). 178 such pairs in the safetensors. The newer `torch.nn.utils.parametrizations.weight_norm` API (which would produce `parametrizations.weight.original0/1`) is *not* what was used — even though current upstream `istftnet.py` imports the new API. (The trained .pth predates that source change; the source code now uses the new API but the saved checkpoint has the old key layout.)
+Upstream applies weight-norm to most `Conv1d` and `ConvTranspose1d` in the decoder + generator + TextEncoder.cnn. **Convention check (verified against the actual `kokoro-v1_0.pth`):** the trained checkpoint uses the **deprecated `torch.nn.utils.weight_norm`** API — state-dict keys are `<conv>.weight_g` (magnitude scalar) and `<conv>.weight_v` (direction). 178 such pairs in the safetensors. The newer `torch.nn.utils.parametrizations.weight_norm` API (which would produce `parametrizations.weight.original0/1`) is *not* what was used — even though current upstream `istftnet.py` imports the new API. (The trained .pth predates that source change; the source code now uses the new API but the saved checkpoint has the old key layout.)
 
-Folded weight: `weight = weight_v * (weight_g / ||weight_v||_per_output_channel)`, where the norm is computed across all dims except dim 0.
+Shape conventions (matters for the fold formula):
+- `Conv1d` with weight_norm: `weight_v` shape `[out_ch, in_ch, kernel]`, `weight_g` shape `[out_ch, 1, 1]` (one scalar per *output* channel).
+- `ConvTranspose1d` with weight_norm: `weight_v` shape `[in_ch, out_ch, kernel]` (PyTorch's transpose convention), `weight_g` shape `[in_ch, 1, 1]` (one scalar per *input* channel — the dim=0 normalization here covers in_channels, not out_channels).
+
+Folded weight (works for both): `weight = weight_v * (weight_g / ||weight_v||)`, where `||weight_v||` is the L2 norm over *all dims except dim 0*. Same arithmetic regardless of conv vs convtranspose; only the geometric meaning of "per-channel" differs.
 
 Two strategies (pick one, document):
 - **(A) Fold during conversion.** Modify `convert_weights.py` to detect `.weight_g`/`.weight_v` pairs, compute the folded `weight`, and store as flat `weight`. Rust load uses plain `candle_nn::conv1d` etc. **Recommended.** Matches the candle convention of folding train-time gymnastics at conversion time.
 - **(B) Fold at load time.** Define a `weight_normed_conv1d` Rust helper that reads `<prefix>.weight_g` / `<prefix>.weight_v`, computes the weight in Rust, constructs a `Conv1d` with the folded value, then loads bias separately. More code but conversion script stays simpler.
 
-Either way: this affects **TextEncoder.cnn convs, every Conv1d in AdainResBlk1d (conv1, conv2, conv1x1, pool), Decoder.f0_conv/n_conv/asr_res, Generator.ups, Generator.conv_post, AdaINResBlock1.convs1/convs2** — basically every conv except the AdaIN1d FC linears and the standalone ProsodyPredictor.{F0,N}_proj convs (the latter is a tiny `Conv1d(d_hid/2, 1, 1)` with no weight_norm). Codex landed strategy choice at stage 5 (CnnBlock fix in 679ed97, validated to max_abs=2.161e-6 at stage 5); reuse that machinery across the rest of the model.
+**What gets weight-normed (verified against the safetensors header for every conv-bearing submodule):**
+- TextEncoder.cnn convs ✓
+- Every Conv1d / ConvTranspose1d in `AdainResBlk1d` (conv1, conv2, conv1x1, pool) ✓
+- Decoder.f0_conv / n_conv / asr_res.0 ✓
+- Generator.ups (ConvTranspose1d, both stages) ✓
+- Generator.conv_post ✓
+- Every Conv1d in AdaINResBlock1 (convs1.{0,1,2}, convs2.{0,1,2}, both in `resblocks` and in `noise_res`) ✓
+
+**What does NOT get weight-normed** (don't add the fold logic for these — they have plain `.weight`/`.bias`):
+- `Generator.noise_convs.{0,1}` — plain Conv1d. Both have just `.weight` and `.bias` keys; no weight_g/weight_v. Easy to assume otherwise since they sit in the generator alongside weight-normed convs.
+- AdaIN1d FC linears (the style → 2*channels projection)
+- ProsodyPredictor.F0_proj / N_proj (tiny `Conv1d(d_hid/2, 1, 1)`)
+- bert_encoder Linear, predictor.duration_proj Linear, BERT internals, predictor LSTMs, text_encoder LSTM/embedding, m_source.l_linear
+
+Codex landed the fold strategy at stage 5 (CnnBlock fix in `679ed97`, validated to max_abs=2.161e-6); reuse that machinery for everything in the "weight-normed" list above. Don't apply it to the "NOT weight-normed" list — the fold helper would either fail to find keys or silently produce garbage if a fall-through path computes from non-existent tensors.
 
 ### 5.7. Implementation order suggestion
 
