@@ -78,6 +78,38 @@ This means: same UDP/PCM convention as the existing mic pipeline, just a second 
    - **Live test (Andrew)**: same elephant-fact prompt as before. With AEC on, the loop should not cascade. Andrew should be able to interrupt without lowering volume.
    - **Regression**: with `--reference-listen` unset, transcribe_live behaves identically to before.
 
+### Phase A.5 — Startup calibration phrase (after A.1–A.4 ship and validate)
+
+**Why:** AEC's delay-locking and gain estimation converge faster (and more reliably) when the very first sound through the loop is a known, clean signal coming through the *real* speaker → air → mic path. Without this, the kernel has to bootstrap on whatever the first agent turn happens to be — usually fine, occasionally not. A short calibration phrase at ASR-daemon startup costs ~1 second and removes the cold-start uncertainty.
+
+**Goal:** when `transcribe_live` starts with `--reference-listen` set, it tells the speak-server to emit a short calibration utterance. The phrase plays through the normal Kokoro → speaker path AND the `--reference-out` UDP path (i.e. through `StreamingAudioOutput`'s queue, not bypassing it). The AEC kernel sees a known clean reference + the room-coloured echo and uses it to seed delay + gain estimates.
+
+**Why a Kokoro-synthesized phrase, not a tone or arpeggio:**
+- Domain-matched: the calibration signal has the same spectral envelope as the audio the AEC will actually be cancelling later.
+- Routes through the same code path that real TTS uses — flushes any queue/cpal init weirdness.
+- The cost (one extra synthesize on startup) is negligible: speak-server already has the model loaded.
+
+Phrase: short and tasteful — `"Recognition ready."` (~0.8s). Not a chime, not a clip. The system announcing itself.
+
+**Wire / control plane:**
+- New: speak-server `--http-listen <host:port>` flag (default off). When set, binds an HTTP server on the same process. Keep it dependency-light — `tiny_http` or hand-rolled — no `axum`/`hyper` weight needed for one endpoint.
+- `POST /calibrate` (no body, or optional `{"phrase": "..."}` JSON): synthesize the phrase via the same pipeline as a normal UDP datagram, push into `StreamingAudioOutput`, return 200 OK once enqueued (not after playback finishes — the caller is the AEC, which wants the audio to *start* arriving so it can lock).
+- Default phrase is hard-coded; override is for testing.
+- Same `--reference-out` target gets the calibration audio, so the AEC kernel sees both sides automatically.
+
+**ASR side (transcribe_live):**
+- New: `--calibrate-url <http://host:port/calibrate>` flag (opt-in, default off). Only meaningful with `--reference-listen` set.
+- On startup, after binding the reference UDP socket but before opening the mic stream (or right after — the AEC ring buffer holds history either way), POST to the URL. Log success/failure but don't fatal — calibration is best-effort.
+- The AEC kernel itself needs no special "calibration mode": its existing cross-correlation + LSQ gain logic operates on whatever it sees. The calibration phrase just guarantees it sees something useful in the first second.
+
+**Don't:**
+- Don't bypass `StreamingAudioOutput` — the whole point is exercising the real audio path.
+- Don't make calibration synchronous on the speak-server side (don't block the HTTP response on playback finishing). Enqueue and return.
+- Don't make `--calibrate-url` mandatory. AEC works without it; this is a polish step.
+- Don't add a "calibration mode" branch in the AEC kernel. The kernel stays dumb; the phrase is just convenient input.
+
+**Receipts:** see §6 stage A.5.
+
 ### Phase B — Adaptive AEC (option c, separate session)
 
 Same plumbing as Phase A. Swap `SpectralSubtractionAec` for `NlmsAec` (or `RlsAec`), 256-tap adaptive FIR filter modeling the room impulse response. Adds proper double-talk detection. ~200-400 LoC additional. Multi-day care: step size, filter length, divergence detection. Out of scope for this milestone — separate spec when ready.
@@ -92,9 +124,10 @@ Same plumbing as Phase A. Swap `SpectralSubtractionAec` for `NlmsAec` (or `RlsAe
 
 ## 5. Coordination
 
-- Codex (pty-10) ships kokoro-tts side: `--reference-out` flag, 24→16 kHz resample, UDP send. Self-contained, ~50 LoC.
-- Pty-9 (after `/clear` — they have 580k stale tokens) ships nemotron-speech side: `--reference-listen`, AEC kernel + integration. The kernel is the meat (~150-200 LoC).
+- Codex (pty-10) ships kokoro-tts side: `--reference-out` flag, 24→16 kHz resample, UDP send. Self-contained, ~50 LoC. **Shipped (4d1b6a6).**
+- Pty-9 ships nemotron-speech side: `--reference-listen`, AEC kernel + integration. The kernel is the meat (~150-200 LoC). **Shipped (7858613). 27 dB suppression on synthetic speech-echo + tone test.**
 - pty-1 (me) coordinates and runs the live elephant-fact retest after both sides land.
+- Phase A.5 (calibration): codex on kokoro-tts side picks up `--http-listen` + `/calibrate` endpoint (~80-120 LoC including a featherweight HTTP handler); a Claude in nemotron-speech adds `--calibrate-url` + the startup POST (~30 LoC). Both shippable in one session each.
 - Same friendly-collaboration mode + format-only-commit pattern as M2/M3.
 
 ## 6. Receipts
@@ -105,4 +138,5 @@ Same plumbing as Phase A. Swap `SpectralSubtractionAec` for `NlmsAec` (or `RlsAe
 | A.2 | transcribe_live `--reference-listen` binds + buffers | Stream consumed without blocking mic path |
 | A.3 | AEC kernel (option b) | Synthetic test: cleaned WAV transcribes to silence (or near-silence) when input is "speaker-only"; transcribes to user words when input is "user + speaker" |
 | A.4 | Live retest | "30 elephant facts" prompt: agent should not feedback-loop, Andrew can interrupt without lowering volume |
+| A.5 | Startup calibration phrase | `transcribe_live --reference-listen <addr> --calibrate-url <url>` POSTs on startup; speak-server speaks "Recognition ready." through speakers AND `--reference-out`; AEC has a clean delay/gain lock by the first user turn. Without `--calibrate-url`: behavior unchanged from A.1–A.4. |
 | B | NLMS adaptive kernel | Future spec |
