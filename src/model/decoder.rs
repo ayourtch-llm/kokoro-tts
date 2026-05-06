@@ -31,8 +31,8 @@ impl AdaIN1d {
         let gamma = &chunks[0];
         let beta = &chunks[1];
         let x = instance_norm1d(x, 1e-5)?;
-        let one = x.ones_like()?;
-        ((gamma + one)? * &x)? + beta
+        let one = gamma.ones_like()?;
+        (gamma + one)?.broadcast_mul(&x)?.broadcast_add(beta)
     }
 }
 

@@ -297,8 +297,8 @@ impl Adain1d {
         let gamma = &chunks[0];
         let beta = &chunks[1];
         let x = instance_norm1d(x, 1e-5)?;
-        let one = x.ones_like()?;
-        ((gamma + one)? * &x)? + beta
+        let one = gamma.ones_like()?;
+        (gamma + one)?.broadcast_mul(&x)?.broadcast_add(beta)
     }
 }
 
@@ -520,13 +520,13 @@ impl ProsodyPredictor {
         for block in &self.f0_blocks {
             f0 = block.forward(&f0, s)?;
         }
-        let f0 = self.f0_proj.forward(&f0)?;
+        let f0 = self.f0_proj.forward(&f0)?.squeeze(1)?;
 
         let mut n = x.transpose(1, 2)?;
         for block in &self.n_blocks {
             n = block.forward(&n, s)?;
         }
-        let n = self.n_proj.forward(&n)?;
+        let n = self.n_proj.forward(&n)?.squeeze(1)?;
 
         Ok((f0, n))
     }
