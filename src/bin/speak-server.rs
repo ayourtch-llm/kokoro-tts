@@ -277,6 +277,9 @@ fn process_phrase(shared: &SharedState, text: &str) -> Result<ProcessReceipt> {
 }
 
 fn handle_http_stream(stream: &mut TcpStream, shared: &SharedState) -> Result<()> {
+    stream
+        .set_nonblocking(false)
+        .context("setting accepted http stream blocking")?;
     stream.set_read_timeout(Some(Duration::from_secs(2))).ok();
     let mut buf = Vec::new();
     let mut header_end = None;
