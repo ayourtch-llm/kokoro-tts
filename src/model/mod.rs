@@ -4,6 +4,7 @@ pub mod bert;
 mod config;
 pub mod decoder;
 pub mod predictor;
+pub mod source;
 pub mod stft;
 pub mod text_encoder;
 
