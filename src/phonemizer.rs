@@ -30,6 +30,7 @@ mod lexicon;
 mod misaki_gold;
 mod normalize;
 mod sentence;
+#[allow(unused_imports)]
 pub use normalize::normalize_cardinals;
 
 #[derive(Debug, Default, Clone, Copy)]
