@@ -10,6 +10,7 @@ use kokoro_tts::synthesis::{
     samples_to_tensor, soft_normalize, synthesize_phonemes, synthesize_text, write_wav,
 };
 use std::path::PathBuf;
+use std::fs;
 
 #[derive(Debug)]
 struct Args {
@@ -17,6 +18,7 @@ struct Args {
     voice: PathBuf,
     text: Option<String>,
     phonemes: Option<String>,
+    infile: Option<PathBuf>,
     out: PathBuf,
     speed: f64,
     verbose: bool,
@@ -31,6 +33,7 @@ impl Args {
             voice: PathBuf::from("models/voices/af_heart.safetensors"),
             text: None,
             phonemes: None,
+            infile: None,
             out: PathBuf::from("hello.wav"),
             speed: 1.0,
             verbose: false,
@@ -43,13 +46,14 @@ impl Args {
                 }
                 "--voice" => parsed.voice = PathBuf::from(args.next().context("--voice")?),
                 "--text" => parsed.text = Some(args.next().context("--text")?),
-                "--phonemes" => parsed.phonemes = Some(args.next().context("--phonemes")?),
+                 "--infile" => parsed.infile = Some(PathBuf::from(args.next().context("--infile")?)),
+                 "--phonemes" => parsed.phonemes = Some(args.next().context("--phonemes")?),
                 "--out" => parsed.out = PathBuf::from(args.next().context("--out")?),
                 "--speed" => parsed.speed = args.next().context("--speed")?.parse()?,
                 "--verbose" => parsed.verbose = true,
                 "--play" => parsed.play = true,
                 "--help" | "-h" => {
-                    println!("usage: cargo run --release --bin speak -- [--model-dir DIR] [--voice PATH] [--text \"...\" | --phonemes \"...\"] [--out FILE] [--speed F] [--verbose] [--play]");
+                    println!("usage: cargo run --release --bin speak -- [--model-dir DIR] [--voice PATH] [--text \"...\" | --infile FILE | --phonemes \"...\"] [--out FILE] [--speed F] [--verbose] [--play]");
                     std::process::exit(0);
                 }
                 other => bail!("unknown argument {other}"),
@@ -61,7 +65,13 @@ impl Args {
 
 fn main() -> Result<()> {
     tracing_subscriber::fmt::try_init().ok();
-    let args = Args::parse()?;
+    let mut args = Args::parse()?;
+    if let Some(ref infile) = args.infile {
+        args.text = Some(
+            fs::read_to_string(infile)
+                .with_context(|| format!("reading infile {}", infile.display()))?,
+        );
+    }
     let device = Device::Cpu;
     let model_dir = resolve_resource_path(&args.model_dir);
     let voice = resolve_resource_path(&args.voice);
