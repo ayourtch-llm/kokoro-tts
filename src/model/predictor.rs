@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use candle_core::{DType, IndexOp, Result, Tensor};
+use candle_core::{IndexOp, Result, Tensor};
 use candle_nn::rnn::Direction;
 use candle_nn::{LSTMConfig, Module, VarBuilder, LSTM, RNN};
 
@@ -86,10 +86,7 @@ fn leaky_relu(x: &Tensor) -> Result<Tensor> {
 fn instance_norm1d(x: &Tensor, eps: f64) -> Result<Tensor> {
     let mean = x.mean_keepdim(2)?;
     let var = x.broadcast_sub(&mean)?.sqr()?.mean_keepdim(2)?;
-    x.broadcast_sub(&mean)?.broadcast_div(
-        &var.broadcast_add(&Tensor::new(eps as f32, x.device())?)?
-            .sqrt()?,
-    )
+    x.broadcast_sub(&mean)?.broadcast_div(&var.affine(1.0, eps)?.sqrt()?)
 }
 
 fn layer_norm_last_dim(x: &Tensor, eps: f64) -> Result<Tensor> {
@@ -97,8 +94,7 @@ fn layer_norm_last_dim(x: &Tensor, eps: f64) -> Result<Tensor> {
     let mean = x.mean_keepdim(last_dim)?;
     let var = x.broadcast_sub(&mean)?.sqr()?.mean_keepdim(last_dim)?;
     x.broadcast_sub(&mean)?.broadcast_div(
-        &var.broadcast_add(&Tensor::new(eps as f32, x.device())?)?
-            .sqrt()?,
+        &var.affine(1.0, eps)?.sqrt()?,
     )
 }
 
@@ -163,7 +159,7 @@ impl AdaLayerNorm {
         let gamma = &chunks[0];
         let beta = &chunks[1];
         let x = layer_norm_last_dim(x, self.eps)?;
-        let one = Tensor::ones(gamma.shape(), DType::F32, x.device())?;
+        let one = gamma.ones_like()?;
         x.broadcast_mul(&(gamma + &one)?)?.broadcast_add(beta)
     }
 }

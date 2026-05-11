@@ -81,10 +81,8 @@ pub fn fold_weight_norm_conv_transpose1d(
 fn instance_norm1d(x: &Tensor, eps: f64) -> Result<Tensor> {
     let mean = x.mean_keepdim(2)?;
     let var = x.broadcast_sub(&mean)?.sqr()?.mean_keepdim(2)?;
-    x.broadcast_sub(&mean)?.broadcast_div(
-        &var.broadcast_add(&Tensor::new(eps as f32, x.device())?)?
-            .sqrt()?,
-    )
+    x.broadcast_sub(&mean)?
+        .broadcast_div(&var.affine(1.0, eps)?.sqrt()?)
 }
 
 /// AdaIN 1d for decoder

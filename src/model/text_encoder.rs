@@ -46,10 +46,9 @@ fn channel_layer_norm(x: &Tensor, gamma: &Tensor, beta: &Tensor, eps: f64) -> Re
         .broadcast_sub(&mean)?
         .sqr()?
         .mean_keepdim(channel_last.rank() - 1)?;
-    let normalized = channel_last.broadcast_sub(&mean)?.broadcast_div(
-        &var.broadcast_add(&Tensor::new(eps as f32, x.device())?)?
-            .sqrt()?,
-    )?;
+    let normalized = channel_last
+        .broadcast_sub(&mean)?
+        .broadcast_div(&var.affine(1.0, eps)?.sqrt()?)?;
     let y = normalized.broadcast_mul(gamma)?.broadcast_add(beta)?;
     y.transpose(1, y.rank() - 1)
 }
