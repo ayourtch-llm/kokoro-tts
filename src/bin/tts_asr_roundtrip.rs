@@ -193,19 +193,37 @@ fn word_edit_distance(a: &[String], b: &[String]) -> usize {
     if n == 0 {
         return m;
     }
-    let mut prev: Vec<usize> = (0..=n).collect();
-    let mut curr = vec![0usize; n + 1];
+    let mut dp = vec![vec![0usize; n + 1]; m + 1];
+    for i in 0..=m {
+        dp[i][0] = i;
+    }
+    for j in 0..=n {
+        dp[0][j] = j;
+    }
     for i in 1..=m {
-        curr[0] = i;
         for j in 1..=n {
             let cost = if a[i - 1] == b[j - 1] { 0 } else { 1 };
-            curr[j] = (curr[j - 1] + 1)
-                .min(prev[j] + 1)
-                .min(prev[j - 1] + cost);
+            let mut v = (dp[i][j - 1] + 1)
+                .min(dp[i - 1][j] + 1)
+                .min(dp[i - 1][j - 1] + cost);
+            // Treat hyphenation/joining as free: merging two adjacent ref
+            // tokens to match one hyp token (and vice versa) costs 0.
+            if i >= 2 {
+                let joined = format!("{}{}", a[i - 2], a[i - 1]);
+                if joined == b[j - 1] {
+                    v = v.min(dp[i - 2][j - 1]);
+                }
+            }
+            if j >= 2 {
+                let joined = format!("{}{}", b[j - 2], b[j - 1]);
+                if joined == a[i - 1] {
+                    v = v.min(dp[i - 1][j - 2]);
+                }
+            }
+            dp[i][j] = v;
         }
-        std::mem::swap(&mut prev, &mut curr);
     }
-    prev[n]
+    dp[m][n]
 }
 
 fn wer(reference: &str, hypothesis: &str) -> (f64, usize, usize) {
