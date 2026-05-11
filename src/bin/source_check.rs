@@ -1,6 +1,4 @@
 //! Validate SineGen + SourceModuleHnNSF against `tools/reference_source.py`.
-//! Phase E reference capture:
-//! `cargo run --bin source_check -- --dump-dir /tmp/source_ref`
 
 use anyhow::{bail, Context, Result};
 use candle_core::{DType, Device, Tensor};
@@ -15,13 +13,8 @@ struct Args {
     rand_ini: PathBuf,
     noise: PathBuf,
     reference: PathBuf,
-    source_reference: Option<PathBuf>,
-    noise_reference: Option<PathBuf>,
     uv_reference: PathBuf,
     atol: f32,
-    mean_atol: Option<f64>,
-    dump_dir: Option<PathBuf>,
-    device: String,
 }
 
 impl Args {
@@ -33,13 +26,8 @@ impl Args {
             rand_ini: PathBuf::from("tmp/reference_source_rand_ini.bin"),
             noise: PathBuf::from("tmp/reference_source_noise.bin"),
             reference: PathBuf::from("tmp/reference_source.bin"),
-            source_reference: None,
-            noise_reference: None,
             uv_reference: PathBuf::from("tmp/reference_source_uv.bin"),
             atol: 1e-3,
-            mean_atol: None,
-            dump_dir: None,
-            device: "cpu".to_string(),
         };
         while let Some(arg) = args.next() {
             match arg.as_str() {
@@ -57,14 +45,6 @@ impl Args {
                 "--ref" => {
                     parsed.reference = PathBuf::from(args.next().context("--ref requires a path")?)
                 }
-                "--source-ref" => {
-                    parsed.source_reference =
-                        Some(PathBuf::from(args.next().context("--source-ref requires a path")?))
-                }
-                "--noise-ref" => {
-                    parsed.noise_reference =
-                        Some(PathBuf::from(args.next().context("--noise-ref requires a path")?))
-                }
                 "--uv-ref" => {
                     parsed.uv_reference =
                         PathBuf::from(args.next().context("--uv-ref requires a path")?)
@@ -72,19 +52,8 @@ impl Args {
                 "--atol" => {
                     parsed.atol = args.next().context("--atol requires a value")?.parse()?
                 }
-                "--mean-atol" => {
-                    parsed.mean_atol = Some(
-                        args.next()
-                            .context("--mean-atol requires a value")?
-                            .parse()?,
-                    )
-                }
-                "--dump-dir" => {
-                    parsed.dump_dir = Some(PathBuf::from(args.next().context("--dump-dir")?))
-                }
-                "--device" => parsed.device = args.next().context("--device")?,
                 "--help" | "-h" => {
-                    println!("usage: cargo run --bin source_check -- --model-dir models --f0 F0 --rand RAND --noise NOISE --ref REF --source-ref REF --noise-ref REF --uv-ref UV_REF [--dump-dir DIR] [--device cpu|metal] [--atol 1e-3] [--mean-atol 1e-7]");
+                    println!("usage: cargo run --bin source_check -- --model-dir models --f0 F0 --rand RAND --noise NOISE --ref REF --uv-ref UV_REF [--atol 1e-3]");
                     std::process::exit(0);
                 }
                 other => bail!("unknown argument {other}"),
@@ -117,25 +86,6 @@ fn read_f32_bin(path: &Path) -> Result<(Vec<usize>, Vec<f32>)> {
     Ok((shape, data))
 }
 
-fn write_f32_bin(path: &Path, t: &Tensor) -> Result<()> {
-    use std::io::Write;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
-    }
-    let dims = t.dims().to_vec();
-    let data = t.to_dtype(DType::F32)?.flatten_all()?.to_vec1::<f32>()?;
-    let mut file =
-        std::fs::File::create(path).with_context(|| format!("creating {}", path.display()))?;
-    file.write_all(&(dims.len() as u32).to_le_bytes())?;
-    for dim in dims {
-        file.write_all(&(dim as u32).to_le_bytes())?;
-    }
-    for value in data {
-        file.write_all(&value.to_le_bytes())?;
-    }
-    Ok(())
-}
-
 fn tensor_from_bin(path: &Path, device: &Device) -> Result<Tensor> {
     let (shape, data) = read_f32_bin(path)?;
     Ok(match shape.as_slice() {
@@ -151,7 +101,6 @@ fn compare(
     ref_shape: &[usize],
     ref_data: &[f32],
     atol: f32,
-    mean_atol: Option<f64>,
 ) -> Result<()> {
     if got.dims() != ref_shape {
         bail!(
@@ -189,38 +138,12 @@ fn compare(
             atol
         );
     }
-    if let Some(mean_atol) = mean_atol {
-        if mean_abs > mean_atol {
-            bail!(
-                "{name} FAIL: mean_abs {:.3e} exceeds tolerance {:.3e}",
-                mean_abs,
-                mean_atol
-            );
-        }
-    }
     Ok(())
-}
-
-fn resolve_device(spec: &str) -> Result<Device> {
-    match spec {
-        "cpu" => Ok(Device::Cpu),
-        "metal" => {
-            #[cfg(feature = "metal")]
-            {
-                Device::new_metal(0).context("Metal device not available")
-            }
-            #[cfg(not(feature = "metal"))]
-            {
-                bail!("--device metal requires building with --features metal")
-            }
-        }
-        other => bail!("unknown --device {other}; expected cpu or metal"),
-    }
 }
 
 fn main() -> Result<()> {
     let args = Args::parse()?;
-    let device = resolve_device(&args.device)?;
+    let device = Device::Cpu;
     let vb = unsafe {
         VarBuilder::from_mmaped_safetensors(
             &[args.model_dir.join("model.safetensors")],
@@ -235,41 +158,9 @@ fn main() -> Result<()> {
     let (ref_shape, ref_data) = read_f32_bin(&args.reference)?;
     let (uv_shape, uv_data) = read_f32_bin(&args.uv_reference)?;
 
-    let (out, sine_noise, uv) = source.forward_with_controls(&f0, Some(&rand_ini), Some(&noise))?;
-    if let Some(dir) = args.dump_dir.as_deref() {
-        write_f32_bin(&dir.join("source_ref_sine_merge.bin"), &out)?;
-        write_f32_bin(&dir.join("source_ref_sine_noise.bin"), &sine_noise)?;
-        write_f32_bin(&dir.join("source_ref_uv.bin"), &uv)?;
-    }
-    compare("source", &out, &ref_shape, &ref_data, args.atol, None)?;
-    if let Some(path) = args.source_reference.as_deref() {
-        let (shape, data) = read_f32_bin(path)?;
-        compare(
-            "source_ref",
-            &out,
-            &shape,
-            &data,
-            args.atol,
-            args.mean_atol,
-        )?;
-    }
-    if let Some(path) = args.noise_reference.as_deref() {
-        let (shape, data) = read_f32_bin(path)?;
-        compare(
-            "noise_ref",
-            &sine_noise,
-            &shape,
-            &data,
-            args.atol,
-            args.mean_atol,
-        )?;
-    }
-    compare("uv", &uv, &uv_shape, &uv_data, 0.0, None)?;
-    if let Some(dir) = args.dump_dir.as_deref() {
-        let path = dir.join("source_ref_uv.bin");
-        let (shape, data) = read_f32_bin(&path)?;
-        compare("uv_ref", &uv, &shape, &data, 0.0, Some(0.0))?;
-    }
+    let (out, _, uv) = source.forward_with_controls(&f0, Some(&rand_ini), Some(&noise))?;
+    compare("source", &out, &ref_shape, &ref_data, args.atol)?;
+    compare("uv", &uv, &uv_shape, &uv_data, 0.0)?;
     println!("OK");
     Ok(())
 }
