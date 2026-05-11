@@ -177,7 +177,59 @@ fn phonemize_word(
     gold.lookup(&word)
         .map(str::to_owned)
         .or_else(|| lexicon.lookup(&word).map(arpabet::phones_to_ipa))
+        .or_else(|| try_possessive(word, ctx, gold, lexicon))
         .unwrap_or_else(|| lts::pronounce_oov(word))
+}
+
+/// Handle a possessive like "mark's" / "Germany's" / "country's" that
+/// isn't in the lexicon as a contraction: phonemize the base and append
+/// /s/, /z/, or /ɪz/ depending on the final phone of the base IPA.
+fn try_possessive(
+    word: &str,
+    ctx: &homograph::WordContext<'_>,
+    gold: &misaki_gold::MisakiGoldLexicon,
+    lexicon: &lexicon::Lexicon,
+) -> Option<String> {
+    let base = word
+        .strip_suffix("'s")
+        .or_else(|| word.strip_suffix("'S"))
+        .or_else(|| word.strip_suffix("\u{2019}s"))
+        .or_else(|| word.strip_suffix("\u{2019}S"))?;
+    if base.is_empty() {
+        return None;
+    }
+    // Don't recurse infinitely: base must not itself end in 's.
+    if base.ends_with('\'') || base.ends_with('\u{2019}') {
+        return None;
+    }
+    let base_ipa = phonemize_word(base, ctx, gold, lexicon);
+    if base_ipa.is_empty() {
+        return None;
+    }
+    let suffix = possessive_phone_after(&base_ipa);
+    Some(format!("{base_ipa}{suffix}"))
+}
+
+/// English possessive 's allomorph from the final phone of the base.
+/// - sibilants (s, z, ʃ, ʒ, tʃ, dʒ) → /ɪz/
+/// - voiceless stops/fricatives (p, t, k, f, θ) → /s/
+/// - everything else (vowels, voiced consonants) → /z/
+fn possessive_phone_after(ipa: &str) -> &'static str {
+    let trimmed = ipa.trim_end_matches(|c: char| {
+        c == 'ˈ' || c == 'ˌ' || c == 'ː' || c.is_whitespace()
+    });
+    let chars: Vec<char> = trimmed.chars().collect();
+    if chars.len() >= 2 {
+        let last_two: String = chars[chars.len() - 2..].iter().collect();
+        if last_two == "tʃ" || last_two == "dʒ" {
+            return "ɪz";
+        }
+    }
+    match chars.last() {
+        Some('s') | Some('z') | Some('ʃ') | Some('ʒ') => "ɪz",
+        Some('p') | Some('t') | Some('k') | Some('f') | Some('θ') => "s",
+        _ => "z",
+    }
 }
 
 fn pronounce_or_spell_acronym(
@@ -210,7 +262,11 @@ fn tokenize(text: String) -> Vec<Token> {
     let mut tokens = Vec::new();
     let mut current = String::new();
     for ch in text.chars() {
-        if ch.is_ascii_alphabetic() || ch == '\'' || ch == '-' {
+        // U+2019 RIGHT SINGLE QUOTATION MARK is used as the apostrophe in
+        // most curly-quoted text (e.g. "mark’s"). Treat it as part of the
+        // word like a straight apostrophe so possessives and contractions
+        // stay together as one token.
+        if ch.is_ascii_alphabetic() || ch == '\'' || ch == '\u{2019}' || ch == '-' {
             current.push(ch);
         } else {
             if !current.is_empty() {
