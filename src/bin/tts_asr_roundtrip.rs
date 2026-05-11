@@ -1,3 +1,4 @@
+#![cfg(feature = "accuracy")]
 //! Round-trip TTS→ASR accuracy harness.
 //!
 //! Loads kokoro-tts and nemotron-speech models once, then for each input

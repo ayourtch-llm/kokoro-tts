@@ -441,8 +441,25 @@ fn parse_token(chars: &[char], start: usize) -> Option<(String, usize)> {
     let value = if trimmed.is_empty() { "0" } else { trimmed };
     if !saw_comma && value.len() == 4 {
         if let Ok(year) = value.parse::<u16>() {
-            if (1000..=2099).contains(&year) && token_ends_cleanly(chars, i) {
-                return Some((year_phrase(year), i - start));
+            if (1000..=2099).contains(&year) {
+                // Try decade-plural first ("1920s", "1920's", "1920’s") so the
+                // bare-year branch doesn't strip the apostrophe and leave a
+                // stray 's' for later passes.
+                let plural_consumed = match (chars.get(i), chars.get(i + 1)) {
+                    (Some(&'\''), Some(&'s')) | (Some(&'\''), Some(&'S')) => 2,
+                    (Some(&'\u{2019}'), Some(&'s')) | (Some(&'\u{2019}'), Some(&'S')) => 2,
+                    (Some(&'s'), _) | (Some(&'S'), _) => 1,
+                    _ => 0,
+                };
+                if plural_consumed > 0 && token_ends_cleanly(chars, i + plural_consumed) {
+                    return Some((
+                        pluralize_year_phrase(year),
+                        i + plural_consumed - start,
+                    ));
+                }
+                if token_ends_cleanly(chars, i) {
+                    return Some((year_phrase(year), i - start));
+                }
             }
         }
     }
@@ -823,12 +840,23 @@ fn match_cents_suffix(chars: &[char], start: usize) -> Option<(String, usize)> {
 fn match_unit(chars: &[char], start: usize) -> Option<(String, usize)> {
     let (number_raw, number_len) = scan_unit_number(chars, start)?;
     let mut idx = start + number_len;
+    let had_space = matches!(chars.get(idx), Some(ch) if ch.is_whitespace());
     while matches!(chars.get(idx), Some(ch) if ch.is_whitespace()) {
         idx += 1;
     }
     let (singular, plural, unit_len, always_plural) = match_unit_suffix(chars, idx)?;
     if !unit_ends_cleanly(chars, idx + unit_len) {
         return None;
+    }
+    // Refuse "1920s" / "1990s" → "nineteen twenty seconds" / etc. When a
+    // 4-digit year is glued directly to a single-letter unit (s, g, m, t),
+    // it's almost always a decade plural; leave it for normalize_cardinals.
+    if !had_space && unit_len == 1 && number_raw.len() == 4 {
+        if let Ok(year) = number_raw.parse::<u16>() {
+            if (1000..=2099).contains(&year) {
+                return None;
+            }
+        }
     }
     let number_words = normalize_cardinals(&number_raw);
     let unit_word = if always_plural {
@@ -1260,6 +1288,31 @@ fn year_phrase(year: u16) -> String {
     }
 }
 
+/// Decade-plural for "1920s" / "1920's" → "nineteen twenties".
+/// Pluralizes the last word of the year phrase using English noun rules
+/// for the words year_phrase actually emits.
+fn pluralize_year_phrase(year: u16) -> String {
+    let phrase = year_phrase(year);
+    let mut parts: Vec<String> = phrase.split_whitespace().map(str::to_owned).collect();
+    if let Some(last) = parts.pop() {
+        let pluralized = match last.as_str() {
+            "twenty" => "twenties".to_string(),
+            "thirty" => "thirties".to_string(),
+            "forty" => "forties".to_string(),
+            "fifty" => "fifties".to_string(),
+            "sixty" => "sixties".to_string(),
+            "seventy" => "seventies".to_string(),
+            "eighty" => "eighties".to_string(),
+            "ninety" => "nineties".to_string(),
+            "hundred" => "hundreds".to_string(),
+            "thousand" => "thousands".to_string(),
+            other => format!("{other}s"),
+        };
+        parts.push(pluralized);
+    }
+    parts.join(" ")
+}
+
 fn integer_to_words(raw: &str) -> String {
     let trimmed = raw.trim_start_matches('0');
     let value = if trimmed.is_empty() { "0" } else { trimmed };
@@ -1407,6 +1460,37 @@ mod tests {
         assert_eq!(normalize_cardinals("2008"), "two thousand eight");
         assert_eq!(normalize_cardinals("2010"), "twenty ten");
         assert_eq!(normalize_cardinals("2026"), "twenty twenty six");
+    }
+
+    #[test]
+    fn normalizes_decade_plurals() {
+        assert_eq!(normalize_cardinals("1920s"), "nineteen twenties");
+        assert_eq!(normalize_cardinals("1990s"), "nineteen nineties");
+        assert_eq!(normalize_cardinals("2010s"), "twenty tens");
+        assert_eq!(normalize_cardinals("1900s"), "nineteen hundreds");
+        assert_eq!(normalize_cardinals("2000s"), "two thousands");
+        assert_eq!(normalize_cardinals("1920's"), "nineteen twenties");
+        assert_eq!(
+            normalize_cardinals("In the 1920s the world changed."),
+            "In the nineteen twenties the world changed."
+        );
+    }
+
+    #[test]
+    fn decade_survives_full_pipeline() {
+        // Mirror the order phonemizer.rs::phonemize uses, to catch regressions
+        // where an earlier pass mangles "1920s" before normalize_cardinals runs.
+        let pipeline = |text: &str| {
+            normalize_cardinals(&normalize_acronyms(&normalize_units(
+                &normalize_money_time(&normalize_math(&normalize_dates(
+                    &normalize_abbreviations(text),
+                ))),
+            )))
+        };
+        assert_eq!(
+            pipeline("In the 1920s the world changed."),
+            "In the nineteen twenties the world changed."
+        );
     }
 
     #[test]
