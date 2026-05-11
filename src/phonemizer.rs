@@ -217,10 +217,43 @@ fn phonemize_word(
     }
     gold.lookup(&word)
         .map(str::to_owned)
+        .or_else(|| try_gold_plural(word, gold))
         .or_else(|| lexicon.lookup(&word).map(arpabet::phones_to_ipa))
         .or_else(|| try_possessive(word, ctx, gold, lexicon))
         .or_else(|| try_hyphenated(word, ctx, gold, lexicon))
         .unwrap_or_else(|| lts::pronounce_oov(word))
+}
+
+/// Derive a regular plural pronunciation from the gold singular when gold
+/// has the base but not the plural ("centimes" → derive from "centime",
+/// "krones" → derive from "krone"). This preempts CMUdict for words where
+/// gold's curated singular pronunciation diverges from CMUdict's
+/// English-anglicized plural (e.g. "centime" /sˈɑntˌim/ vs CMUdict
+/// "CENTIMES" /sɛntaɪmz/). Only fires when gold has an exact match for
+/// the bare singular, so irregular plurals (already in gold) are
+/// unaffected.
+fn try_gold_plural(word: &str, gold: &misaki_gold::MisakiGoldLexicon) -> Option<String> {
+    if !word.ends_with('s') && !word.ends_with('S') {
+        return None;
+    }
+    let lower = word.to_ascii_lowercase();
+    // Strip "s" first, then "es". Some words match both (e.g. "horses"
+    // → "horse" via "s" strip), in which case the "s" strip wins —
+    // that's what we want, since the singular is the one in gold.
+    for trim in &[1usize, 2usize] {
+        if lower.len() <= *trim {
+            continue;
+        }
+        if *trim == 2 && !lower.ends_with("es") {
+            continue;
+        }
+        let base = &lower[..lower.len() - trim];
+        if let Some(base_ipa) = gold.lookup(base) {
+            let suffix = possessive_phone_after(base_ipa);
+            return Some(format!("{base_ipa}{suffix}"));
+        }
+    }
+    None
 }
 
 /// Handle a hyphenated compound like "pre-war", "one-twelfth", "well-known"
