@@ -1,4 +1,7 @@
 //! Validate iSTFTNet Generator against `tools/reference_generator.py`.
+//! Phase D har check:
+//! `cargo run --bin generator_check -- --dump-har /tmp/har_after.bin --har-ref /tmp/har_before.bin`
+//! `cargo run --features metal --bin generator_check -- --device metal --dump-har /tmp/har_after_metal.bin --har-ref /tmp/har_before_metal.bin`
 
 use anyhow::{bail, Context, Result};
 use candle_core::{DType, Device, Tensor};
@@ -15,7 +18,11 @@ struct Args {
     rand_ini: PathBuf,
     noise: PathBuf,
     reference: PathBuf,
+    dump_har: Option<PathBuf>,
+    har_reference: Option<PathBuf>,
     atol: f32,
+    har_atol: f32,
+    device: String,
 }
 
 impl Args {
@@ -29,7 +36,11 @@ impl Args {
             rand_ini: PathBuf::from("tmp/reference_generator_rand_ini.bin"),
             noise: PathBuf::from("tmp/reference_generator_noise.bin"),
             reference: PathBuf::from("tmp/reference_generator.bin"),
+            dump_har: None,
+            har_reference: None,
             atol: 5e-3,
+            har_atol: 1e-6,
+            device: "cpu".to_string(),
         };
         while let Some(arg) = args.next() {
             match arg.as_str() {
@@ -42,9 +53,17 @@ impl Args {
                 "--rand-ini" => parsed.rand_ini = PathBuf::from(args.next().context("--rand-ini")?),
                 "--noise" => parsed.noise = PathBuf::from(args.next().context("--noise")?),
                 "--ref" => parsed.reference = PathBuf::from(args.next().context("--ref")?),
+                "--dump-har" => {
+                    parsed.dump_har = Some(PathBuf::from(args.next().context("--dump-har")?))
+                }
+                "--har-ref" => {
+                    parsed.har_reference = Some(PathBuf::from(args.next().context("--har-ref")?))
+                }
                 "--atol" => parsed.atol = args.next().context("--atol")?.parse()?,
+                "--har-atol" => parsed.har_atol = args.next().context("--har-atol")?.parse()?,
+                "--device" => parsed.device = args.next().context("--device")?,
                 "--help" | "-h" => {
-                    println!("usage: cargo run --bin generator_check -- [--model-dir DIR] [--x ...] [--s ...] [--f0 ...] [--rand-ini ...] [--noise ...] [--ref ...] [--atol T]");
+                    println!("usage: cargo run --bin generator_check -- [--model-dir DIR] [--x ...] [--s ...] [--f0 ...] [--rand-ini ...] [--noise ...] [--ref ...] [--dump-har PATH] [--har-ref PATH] [--device cpu|metal] [--atol T] [--har-atol T]");
                     std::process::exit(0);
                 }
                 other => bail!("unknown argument {other}"),
@@ -77,6 +96,22 @@ fn read_f32_bin(path: &Path) -> Result<(Vec<usize>, Vec<f32>)> {
     Ok((shape, data))
 }
 
+fn write_f32_bin(path: &Path, t: &Tensor) -> Result<()> {
+    use std::io::Write;
+    let dims = t.dims().to_vec();
+    let data = t.to_dtype(DType::F32)?.flatten_all()?.to_vec1::<f32>()?;
+    let mut file =
+        std::fs::File::create(path).with_context(|| format!("creating {}", path.display()))?;
+    file.write_all(&(dims.len() as u32).to_le_bytes())?;
+    for dim in dims {
+        file.write_all(&(dim as u32).to_le_bytes())?;
+    }
+    for value in data {
+        file.write_all(&value.to_le_bytes())?;
+    }
+    Ok(())
+}
+
 fn tensor_from(path: &Path, device: &Device) -> Result<(Vec<usize>, Tensor)> {
     let (shape, data) = read_f32_bin(path)?;
     let t = match shape.len() {
@@ -87,9 +122,71 @@ fn tensor_from(path: &Path, device: &Device) -> Result<(Vec<usize>, Tensor)> {
     Ok((shape, t))
 }
 
+fn compare_tensor(
+    name: &str,
+    actual: &Tensor,
+    ref_shape: &[usize],
+    ref_data: &[f32],
+    atol: f32,
+) -> Result<()> {
+    if actual.dims() != ref_shape {
+        bail!(
+            "{name} shape mismatch: rust {:?} vs ref {:?}",
+            actual.dims(),
+            ref_shape
+        );
+    }
+    let actual_data = actual
+        .to_dtype(DType::F32)?
+        .flatten_all()?
+        .to_vec1::<f32>()?;
+    let mut max_abs = 0f32;
+    let mut sum_abs = 0f64;
+    let mut argmax = 0usize;
+    for (i, (&actual, &expected)) in actual_data.iter().zip(ref_data).enumerate() {
+        let delta = (actual - expected).abs();
+        sum_abs += f64::from(delta);
+        if delta > max_abs {
+            max_abs = delta;
+            argmax = i;
+        }
+    }
+    let mean_abs = sum_abs / actual_data.len() as f64;
+    println!(
+        "{name} shape={:?} max_abs={:.3e} mean_abs={:.3e} argmax={} rust={:.6e} ref={:.6e}",
+        actual.dims(),
+        max_abs,
+        mean_abs,
+        argmax,
+        actual_data[argmax],
+        ref_data[argmax]
+    );
+    if max_abs > atol {
+        bail!("FAIL: {name} max_abs {:.3e} exceeds {:.3e}", max_abs, atol);
+    }
+    Ok(())
+}
+
+fn resolve_device(spec: &str) -> Result<Device> {
+    match spec {
+        "cpu" => Ok(Device::Cpu),
+        "metal" => {
+            #[cfg(feature = "metal")]
+            {
+                Device::new_metal(0).context("Metal device not available")
+            }
+            #[cfg(not(feature = "metal"))]
+            {
+                bail!("--device metal requires building with --features metal")
+            }
+        }
+        other => bail!("unknown --device {other}; expected cpu or metal"),
+    }
+}
+
 fn main() -> Result<()> {
     let args = Args::parse()?;
-    let device = Device::Cpu;
+    let device = resolve_device(&args.device)?;
 
     let (_, x) = tensor_from(&args.x, &device)?;
     let (_, s) = tensor_from(&args.s, &device)?;
@@ -116,6 +213,16 @@ fn main() -> Result<()> {
         5,
         vb.pp("decoder.generator"),
     )?;
+    if args.dump_har.is_some() || args.har_reference.is_some() {
+        let har = gen.harmonic_features_with_controls(&f0, Some(&rand_ini), Some(&noise))?;
+        if let Some(path) = args.dump_har.as_deref() {
+            write_f32_bin(path, &har)?;
+        }
+        if let Some(path) = args.har_reference.as_deref() {
+            let (har_shape, har_data) = read_f32_bin(path)?;
+            compare_tensor("har", &har, &har_shape, &har_data, args.har_atol)?;
+        }
+    }
     let out = gen.forward_with_controls(&x, &s, &f0, Some(&rand_ini), Some(&noise))?;
 
     if out.dims() != ref_shape {

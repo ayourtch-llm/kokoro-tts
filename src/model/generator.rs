@@ -333,20 +333,7 @@ impl Generator {
         rand_ini: Option<&Tensor>,
         noise: Option<&Tensor>,
     ) -> Result<Tensor> {
-        // f0: [B, T_f0]   (note: F0_curve from predictor is [B, 2*T_dec])
-        // f0_upsample_factor = prod(upsample_rates) * hop_size  (= 300 for Kokoro)
-        let f0_audio_len = f0.dim(1)? * self.f0_upsample_factor;
-        let f0_up = f0.unsqueeze(1)?; // [B, 1, T_f0]
-        let f0_up = upsample_nearest1d(&f0_up, f0_audio_len)? // [B, 1, T_audio]
-            .transpose(1, 2)?; // [B, T_audio, 1]
-
-        // NSF source: [B, T_audio, 1] sine_merge → squeeze → [B, T_audio]
-        let (har_source_3d, _, _) = self
-            .m_source
-            .forward_with_controls(&f0_up, rand_ini, noise)?;
-        let har_source = har_source_3d.transpose(1, 2)?.squeeze(1)?;
-        let (har_spec, har_phase) = self.stft.transform(&har_source)?;
-        let har = Tensor::cat(&[&har_spec, &har_phase], 1)?;
+        let har = self.harmonic_features_with_controls(f0, rand_ini, noise)?;
 
         let num_upsamples = self.ups.len();
         let mut x = x.clone();
@@ -378,6 +365,32 @@ impl Generator {
         let spec = x.narrow(1, 0, n_freq)?.exp()?;
         let phase = x.narrow(1, n_freq, n_freq)?.sin()?;
         self.stft.inverse(&spec, &phase, None)
+    }
+
+    pub fn harmonic_features_with_controls(
+        &self,
+        f0: &Tensor,
+        rand_ini: Option<&Tensor>,
+        noise: Option<&Tensor>,
+    ) -> Result<Tensor> {
+        // f0: [B, T_f0]   (note: F0_curve from predictor is [B, 2*T_dec])
+        // f0_upsample_factor = prod(upsample_rates) * hop_size  (= 300 for Kokoro)
+        let f0_audio_len = f0.dim(1)? * self.f0_upsample_factor;
+        let f0_up = f0.unsqueeze(1)?; // [B, 1, T_f0]
+        let f0_up = upsample_nearest1d(&f0_up, f0_audio_len)? // [B, 1, T_audio]
+            .transpose(1, 2)?; // [B, T_audio, 1]
+
+        // NSF source: [B, T_audio, 1] sine_merge → squeeze → [B, T_audio]
+        let (har_source_3d, _, _) = self
+            .m_source
+            .forward_with_controls(&f0_up, rand_ini, noise)?;
+        let har_source = har_source_3d.transpose(1, 2)?.squeeze(1)?;
+        self.harmonic_features(&har_source)
+    }
+
+    pub fn harmonic_features(&self, har_source: &Tensor) -> Result<Tensor> {
+        let (har_spec, har_phase) = self.stft.transform(har_source)?;
+        Tensor::cat(&[&har_spec, &har_phase], 1)
     }
 
     /// Default forward: zero rand_ini, zero noise. Useful for sanity checks

@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use candle_core::{DType, Result, Tensor, D};
+use candle_core::{Result, Tensor, D};
 
 pub struct CustomStft {
     n_fft: usize,
@@ -114,12 +114,48 @@ fn zero_dc_and_nyquist_imag(imag: &Tensor, n_fft: usize) -> Result<Tensor> {
 }
 
 fn atan2_tensor(y: &Tensor, x: &Tensor) -> Result<Tensor> {
-    let y = y.to_dtype(DType::F32)?.flatten_all()?.to_vec1::<f32>()?;
-    let x_vec = x.to_dtype(DType::F32)?.flatten_all()?.to_vec1::<f32>()?;
-    let phase = y
-        .iter()
-        .zip(x_vec.iter())
-        .map(|(&yy, &xx)| yy.atan2(xx))
-        .collect::<Vec<_>>();
-    Tensor::from_vec(phase, x.shape(), x.device())
+    let zero = x.zeros_like()?;
+    let one = x.ones_like()?;
+    let x_zero = x.eq(0f64)?;
+    let safe_abs_x = x_zero.where_cond(&one, &x.abs()?)?;
+    let ratio = y.abs()?.broadcast_div(&safe_abs_x)?;
+    let theta = atan_nonnegative(&ratio)?;
+
+    let signed = y.lt(0f64)?.where_cond(&theta.neg()?, &theta)?;
+    let x_negative = x.lt(0f64)?;
+    let x_negative_value = y.lt(0f64)?.where_cond(
+        &theta.affine(1.0, -std::f64::consts::PI)?,
+        &theta.affine(-1.0, std::f64::consts::PI)?,
+    )?;
+    let nonzero_x = x_negative.where_cond(&x_negative_value, &signed)?;
+
+    let half_pi = zero.affine(0.0, std::f64::consts::FRAC_PI_2)?;
+    let neg_half_pi = zero.affine(0.0, -std::f64::consts::FRAC_PI_2)?;
+    let zero_x_value = y
+        .gt(0f64)?
+        .where_cond(&half_pi, &y.lt(0f64)?.where_cond(&neg_half_pi, &zero)?)?;
+    x_zero.where_cond(&zero_x_value, &nonzero_x)
+}
+
+fn atan_nonnegative(z: &Tensor) -> Result<Tensor> {
+    let tan_pi_8 = std::f64::consts::SQRT_2 - 1.0;
+    let tan_3pi_8 = std::f64::consts::SQRT_2 + 1.0;
+
+    let low = atan_poly(z)?;
+    let mid_arg = (z - 1.0)?.broadcast_div(&(z + 1.0)?)?;
+    let mid = atan_poly(&mid_arg)?.affine(1.0, std::f64::consts::FRAC_PI_4)?;
+    let high = atan_poly(&z.recip()?)?.affine(-1.0, std::f64::consts::FRAC_PI_2)?;
+
+    let low_or_mid = z.gt(tan_pi_8)?.where_cond(&mid, &low)?;
+    z.gt(tan_3pi_8)?.where_cond(&high, &low_or_mid)
+}
+
+fn atan_poly(z: &Tensor) -> Result<Tensor> {
+    let z2 = z.sqr()?;
+    let mut acc = z2.affine(0.0, 1.0 / 29.0)?;
+    for k in (0..14).rev() {
+        let coeff = if k % 2 == 0 { 1.0 } else { -1.0 } / (2 * k + 1) as f64;
+        acc = z2.broadcast_mul(&acc)?.affine(1.0, coeff)?;
+    }
+    z.broadcast_mul(&acc)
 }
