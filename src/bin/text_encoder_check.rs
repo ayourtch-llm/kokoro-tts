@@ -5,7 +5,7 @@ use candle_core::{DType, Device, Tensor};
 use candle_nn::VarBuilder;
 use kokoro_tts::model::text_encoder::TextEncoder;
 use kokoro_tts::model::Config;
-use kokoro_tts::phonemizer::MILESTONE_TEST_PHONEMES;
+use kokoro_tts::phonemizer::REFERENCE_PHONEMES;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug)]
@@ -23,7 +23,7 @@ impl Args {
         let mut parsed = Self {
             model: PathBuf::from("models/model.safetensors"),
             config: PathBuf::from("models/config.json"),
-            phonemes: MILESTONE_TEST_PHONEMES.to_string(),
+            phonemes: REFERENCE_PHONEMES.to_string(),
             reference: PathBuf::from("tmp/reference_text_encoder.bin"),
             atol: 1e-4,
         };

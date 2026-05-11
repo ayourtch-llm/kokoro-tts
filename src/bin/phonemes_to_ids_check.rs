@@ -2,7 +2,7 @@
 
 use anyhow::{bail, Context, Result};
 use kokoro_tts::model::Config;
-use kokoro_tts::phonemizer::MILESTONE_TEST_PHONEMES;
+use kokoro_tts::phonemizer::REFERENCE_PHONEMES;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug)]
@@ -17,7 +17,7 @@ impl Args {
         let mut args = std::env::args().skip(1);
         let mut parsed = Self {
             config: PathBuf::from("models/config.json"),
-            phonemes: MILESTONE_TEST_PHONEMES.to_string(),
+            phonemes: REFERENCE_PHONEMES.to_string(),
             reference: PathBuf::from("tmp/reference_phoneme_ids.bin"),
         };
 

@@ -5,6 +5,12 @@ use anyhow::{bail, Result};
 pub const MILESTONE_TEST_PHRASE: &str = "hello world";
 pub const MILESTONE_TEST_PHONEMES: &str = "həlˈO wˈɜɹld";
 
+/// Phonemes string used by `tools/reference_*.py` to generate the per-stage
+/// `.bin` oracles in `tmp/`. Must match Python's `DEFAULT_PHONEMES` verbatim
+/// — its character count drives `style_index` selection in `*_check.rs`, and
+/// changing it requires regenerating every reference under `tmp/`.
+pub const REFERENCE_PHONEMES: &str = "həlˈoʊ wˈɜɹld";
+
 pub trait Phonemizer: Send + Sync {
     fn phonemize(&self, text: &str) -> Result<String>;
 
