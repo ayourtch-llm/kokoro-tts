@@ -1,13 +1,33 @@
 use crate::model::Kokoro;
 use crate::phonemizer::Phonemizer;
+use crate::phonemizer::sentence::split_sentences;
 use anyhow::{bail, Context, Result};
 use candle_core::{Device, Tensor};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub const SILENCE_PADDING_SAMPLES: usize = 24_000 * 80 / 1_000;
 pub const MAX_SENTENCE_PHONEMES: usize = 510;
+
+/// Progress callback: (original_sentence, chunk_index_1based, total_chunks, elapsed)
+pub type ProgressFn = Box<dyn Fn(&str, usize, usize, Duration) + Send>;
+
+pub struct SynthesisOptions {
+    pub silence_padding_samples: usize,
+    pub max_sentence_phonemes: usize,
+    pub split_sentences: bool,
+}
+
+impl Default for SynthesisOptions {
+    fn default() -> Self {
+        Self {
+            silence_padding_samples: SILENCE_PADDING_SAMPLES,
+            max_sentence_phonemes: MAX_SENTENCE_PHONEMES,
+            split_sentences: true,
+        }
+    }
+}
 
 pub fn resolve_resource_path(path: &Path) -> PathBuf {
     if path.exists() {
@@ -41,21 +61,65 @@ pub fn synthesize_text(
     device: &Device,
     verbose: bool,
 ) -> Result<Vec<f32>> {
-    let phonemes_chunks = phonemizer
-        .phonemize_chunks(text)
-        .with_context(|| format!("phonemizing {:?}", text))?;
+    synthesize_text_opts(
+        model,
+        phonemizer,
+        text,
+        voice,
+        speed,
+        device,
+        verbose,
+        &SynthesisOptions::default(),
+        None,
+    )
+}
+
+pub fn synthesize_text_opts(
+    model: &Kokoro,
+    phonemizer: &impl Phonemizer,
+    text: &str,
+    voice: &Path,
+    speed: f64,
+    device: &Device,
+    verbose: bool,
+    opts: &SynthesisOptions,
+    progress: Option<&ProgressFn>,
+) -> Result<Vec<f32>> {
+    let sentences: Vec<String> = if opts.split_sentences {
+        split_sentences(text)
+    } else {
+        vec![text.to_string()]
+    };
+
+    let mut phonemes_chunks: Vec<String> = Vec::with_capacity(sentences.len());
+    for sentence in &sentences {
+        let p = phonemizer
+            .phonemize(sentence)
+            .with_context(|| format!("phonemizing sentence: {:?}", sentence))?;
+        if p.is_empty() {
+            bail!("phonemizer produced no phonemes for sentence: {sentence}");
+        }
+        phonemes_chunks.push(p);
+    }
+
     if phonemes_chunks.is_empty() {
         bail!("phonemizer produced no chunks");
     }
 
     let mut audio_chunks = Vec::new();
-    for (idx, phonemes) in phonemes_chunks.iter().enumerate() {
+    let total = phonemes_chunks.len();
+    let t0 = std::time::Instant::now();
+    for idx in 0..total {
+        let sentence: &String = &sentences[idx];
+        let phonemes: &String = &phonemes_chunks[idx];
         let phoneme_count = phonemes.chars().count();
-        if phoneme_count > MAX_SENTENCE_PHONEMES {
+        if phoneme_count > opts.max_sentence_phonemes {
             bail!(
-                "sentence {} is too long at {} phonemes; insert punctuation to split it",
+                "sentence {} is too long at {} phonemes (max {});
+                 insert punctuation to split it or increase --max-phonemes",
                 idx + 1,
-                phoneme_count
+                phoneme_count,
+                opts.max_sentence_phonemes,
             );
         }
 
@@ -65,7 +129,7 @@ pub fn synthesize_text(
             println!(
                 "chunk {}/{}: phonemes={} voice_shape={:?}",
                 idx + 1,
-                phonemes_chunks.len(),
+                total,
                 phoneme_count,
                 ref_s.dims()
             );
@@ -85,7 +149,7 @@ pub fn synthesize_text(
             println!(
                 "chunk {}/{}: {} samples ({:.3}s) in {:.3}s ({:.2}x realtime)",
                 idx + 1,
-                phonemes_chunks.len(),
+                total,
                 samples.len(),
                 chunk_duration_s,
                 elapsed.as_secs_f64(),
@@ -93,9 +157,13 @@ pub fn synthesize_text(
             );
         }
         audio_chunks.push(samples);
+
+        if let Some(cb) = progress {
+            cb(sentence, idx + 1, total, t0.elapsed());
+        }
     }
 
-    Ok(concat_with_silence(&audio_chunks, SILENCE_PADDING_SAMPLES))
+    Ok(concat_with_silence(&audio_chunks, opts.silence_padding_samples))
 }
 
 pub fn synthesize_phonemes(

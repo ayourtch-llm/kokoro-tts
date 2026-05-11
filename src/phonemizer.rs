@@ -35,7 +35,7 @@ mod lexicon;
 mod lts;
 mod misaki_gold;
 mod normalize;
-mod sentence;
+pub mod sentence;
 #[allow(unused_imports)]
 pub use normalize::normalize_abbreviations;
 #[allow(unused_imports)]

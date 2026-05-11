@@ -7,8 +7,10 @@ use kokoro_tts::model::Kokoro;
 use kokoro_tts::phonemizer::{TwoTierPhonemizer, MILESTONE_TEST_PHONEMES};
 use kokoro_tts::synthesis::resolve_resource_path;
 use kokoro_tts::synthesis::{
-    samples_to_tensor, soft_normalize, synthesize_phonemes, synthesize_text, write_wav,
+    samples_to_tensor, soft_normalize, synthesize_phonemes, synthesize_text_opts,
+    SynthesisOptions, ProgressFn, MAX_SENTENCE_PHONEMES, SILENCE_PADDING_SAMPLES, write_wav,
 };
+use std::time::Duration;
 use std::path::PathBuf;
 use std::fs;
 
@@ -23,6 +25,9 @@ struct Args {
     speed: f64,
     verbose: bool,
     play: bool,
+    no_split: bool,
+    silence_ms: Option<u64>,
+    max_phonemes: Option<usize>,
 }
 
 impl Args {
@@ -38,6 +43,9 @@ impl Args {
             speed: 1.0,
             verbose: false,
             play: false,
+            no_split: false,
+            silence_ms: None,
+            max_phonemes: None,
         };
         while let Some(arg) = args.next() {
             match arg.as_str() {
@@ -52,8 +60,24 @@ impl Args {
                 "--speed" => parsed.speed = args.next().context("--speed")?.parse()?,
                 "--verbose" => parsed.verbose = true,
                 "--play" => parsed.play = true,
+                "--no-split" => parsed.no_split = true,
+                "--silence-ms" => {
+                    parsed.silence_ms = Some(
+                        args.next().context("--silence-ms")?.parse::<u64>()?,
+                    );
+                }
+                "--max-phonemes" => {
+                    parsed.max_phonemes = Some(
+                        args.next().context("--max-phonemes")?.parse::<usize>()?,
+                    );
+                }
                 "--help" | "-h" => {
-                    println!("usage: cargo run --release --bin speak -- [--model-dir DIR] [--voice PATH] [--text \"...\" | --infile FILE | --phonemes \"...\"] [--out FILE] [--speed F] [--verbose] [--play]");
+                    println!(
+                        "usage: cargo run --release --bin speak -- [--model-dir DIR] [--voice PATH]\n\
+                         \t[--text \"...\" | --infile FILE | --phonemes \"...\"]\n\
+                         \t[--out FILE] [--speed F] [--verbose] [--play]\n\
+                         \t[--no-split] [--silence-ms N] [--max-phonemes N]"
+                    );
                     std::process::exit(0);
                 }
                 other => bail!("unknown argument {other}"),
@@ -122,9 +146,47 @@ fn synthesize(
     device: &Device,
 ) -> Result<candle_core::Tensor> {
     let phonemizer = TwoTierPhonemizer;
+    let opts = SynthesisOptions {
+        split_sentences: !args.no_split,
+        silence_padding_samples: args
+            .silence_ms
+            .map(|ms| (24_000 * ms / 1_000) as usize)
+            .unwrap_or(SILENCE_PADDING_SAMPLES),
+        max_sentence_phonemes: args.max_phonemes.unwrap_or(MAX_SENTENCE_PHONEMES),
+    };
+    let progress: ProgressFn = {
+        let verbose = args.verbose;
+        Box::new(move |sentence: &str, current: usize, total: usize, elapsed: Duration| {
+            let pct = current as f64 / total as f64 * 100.0;
+            let elapsed_s = elapsed.as_secs_f64();
+            let eta = if current > 0 && current < total {
+                let avg = elapsed_s / current as f64;
+                let remaining = (total - current) as f64 * avg;
+                format!("{remaining:.1}s")
+            } else {
+                String::new()
+            };
+            let snippet = if sentence.len() > 60 {
+                let cut = &sentence[..60];
+                format!("{cut}...")
+            } else {
+                sentence.to_string()
+            };
+            println!(
+                "  {snippet:>65.65}  {current:>3}/{total} ({pct:5.1}%) elapsed={elapsed_s:.1}s ETA={eta}"
+            );
+            if verbose {
+                println!(
+                    "    (chunk {current}/{total})"
+                );
+            }
+        })
+    };
     let samples = match (&args.phonemes, &args.text) {
-        (Some(p), _) => synthesize_phonemes(model, p, voice, args.speed, device)?,
-        (None, Some(t)) => synthesize_text(
+        (Some(p), _) => synthesize_phonemes(
+            model, p, voice, args.speed, device,
+        )?,
+        (None, Some(t)) => synthesize_text_opts(
             model,
             &phonemizer,
             t,
@@ -132,6 +194,8 @@ fn synthesize(
             args.speed,
             device,
             args.verbose,
+            &opts,
+            Some(&progress),
         )?,
         (None, None) => {
             synthesize_phonemes(model, MILESTONE_TEST_PHONEMES, voice, args.speed, device)?
