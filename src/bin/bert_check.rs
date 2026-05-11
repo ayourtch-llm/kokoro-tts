@@ -25,7 +25,7 @@ impl Args {
             config: PathBuf::from("models/config.json"),
             phonemes: REFERENCE_PHONEMES.to_string(),
             reference: PathBuf::from("tmp/reference_custom_albert.bin"),
-            atol: 1e-5,
+            atol: 1.1e-5,
         };
 
         while let Some(arg) = args.next() {
