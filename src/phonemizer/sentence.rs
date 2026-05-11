@@ -3,7 +3,7 @@ const ABBREVIATIONS: &[&str] = &[
     "cf.", "a.m.", "p.m.",
 ];
 
-pub(crate) fn split_sentences(text: &str) -> Vec<String> {
+pub fn split_sentences(text: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut current = String::new();
     let mut i = 0;

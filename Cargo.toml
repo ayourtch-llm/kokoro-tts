@@ -7,6 +7,8 @@ edition = "2021"
 default = []
 espeak = []
 metal = ["candle-core/metal", "candle-nn/metal"]
+# Round-trip TTS→ASR accuracy harness; pulls in nemotron-speech via path.
+accuracy = ["dep:nemotron-speech"]
 
 [dependencies]
 axum = { version = "0.7", features = ["json"] }
@@ -24,3 +26,4 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4"] }
 reqwest = { version = "0.11", features = ["stream"] }
+nemotron-speech = { path = "../nemotron-speech", optional = true }
