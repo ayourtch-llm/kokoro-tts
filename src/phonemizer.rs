@@ -161,6 +161,18 @@ fn phonemize_word(
             return ipa;
         }
         if normalize::is_all_caps_acronym(base) {
+            // Same emphasis-vs-acronym heuristic as the non-possessive path:
+            // gold-only lookup so CMUdict acronym spell-outs don't fire.
+            if base.len() >= 3 {
+                let lower = base.to_ascii_lowercase();
+                if let Some(ipa) = gold.lookup(&lower) {
+                    let mut ipa = ipa.to_owned();
+                    if possessive {
+                        ipa.push_str(possessive_phone_after(&ipa));
+                    }
+                    return ipa;
+                }
+            }
             let mut ipa = spell_out_word(base);
             if possessive {
                 ipa.push('z');
@@ -172,6 +184,19 @@ fn phonemize_word(
         return pronounce_or_spell_acronym(word, gold, lexicon);
     }
     if normalize::is_all_caps_acronym(word) {
+        // Treat all-caps emphasis like a normal word when the lowercased form
+        // is a real word in misaki-gold ("WAR" → "war", "STOP" → "stop",
+        // "NEVER" → "never"). Only use the curated gold dict — CMUdict has
+        // explicit entries for acronyms like "FBI" → "EH1 F B IY1 AY1"
+        // which a CMU lookup would treat as a "word" and break spell-out.
+        // 2-letter all-caps tokens are kept as letter spelling because
+        // "IT"/"ID"/"AI"/"OK" are far more often acronyms than emphasis.
+        if word.len() >= 3 {
+            let lower = word.to_ascii_lowercase();
+            if let Some(ipa) = gold.lookup(&lower) {
+                return ipa.to_owned();
+            }
+        }
         return spell_out_word(word);
     }
     gold.lookup(&word)

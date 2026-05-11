@@ -284,6 +284,21 @@ impl AsrPipeline {
     }
 
     fn transcribe(&mut self, audio_16k: &[f32]) -> Result<String> {
+        // GreedyDecoder is designed for streaming chunks of ONE utterance —
+        // its `last_token` and predictor state persist across decode calls.
+        // For independent sentences we must reset, or the previous sample's
+        // state leaks into the next and the predictor net treats the new
+        // audio as a mid-sentence continuation (leading words get swallowed
+        // because the joint network is biased toward "blank" early on).
+        self.decoder.last_token = None;
+        self.decoder.state = nemotron_speech::model::predict::PredictState::zero(
+            2,
+            1,
+            self.predict.pred_hidden(),
+            &self.device,
+            self.dtype,
+        )?;
+
         let mel_cfg = self.mel.config().clone();
         let log_mel = self.mel.forward(audio_16k);
         let n_frames = log_mel.len() / mel_cfg.n_mels;
