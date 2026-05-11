@@ -446,4 +446,21 @@ mod tests {
             .unwrap()
             .contains("lˈid"));
     }
+
+    #[test]
+    fn two_tier_hyphenated_compounds_use_lexicon_parts() {
+        // Each fragment of a hyphenated compound should be looked up in
+        // gold/lexicon rather than dumped into LTS. "one" must come back as
+        // its canonical /wʌn/, and the join is concatenation (no space)
+        // so kokoro doesn't insert a word-boundary pause.
+        let ipa = TwoTierPhonemizer.phonemize("one-twelfth").unwrap();
+        assert!(
+            ipa.contains("wˈʌn") || ipa.contains("wˈən"),
+            "expected /wʌn/ from 'one' fragment, got {ipa:?}"
+        );
+        assert!(!ipa.contains(' '), "expected no space inside hyphenated compound, got {ipa:?}");
+
+        let pre_war = TwoTierPhonemizer.phonemize("pre-war").unwrap();
+        assert!(!pre_war.contains(' '), "expected no space inside 'pre-war', got {pre_war:?}");
+    }
 }
