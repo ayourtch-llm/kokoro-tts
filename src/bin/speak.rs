@@ -8,12 +8,12 @@ use kokoro_tts::model::Kokoro;
 use kokoro_tts::phonemizer::{TwoTierPhonemizer, MILESTONE_TEST_PHONEMES};
 use kokoro_tts::synthesis::resolve_resource_path;
 use kokoro_tts::synthesis::{
-    samples_to_tensor, soft_normalize, synthesize_phonemes, synthesize_text_opts,
-    SynthesisOptions, ProgressFn, MAX_SENTENCE_PHONEMES, SILENCE_PADDING_SAMPLES, write_wav,
+    samples_to_tensor, soft_normalize, synthesize_phonemes, synthesize_text_opts, write_wav,
+    ProgressFn, SynthesisOptions, MAX_SENTENCE_PHONEMES, SILENCE_PADDING_SAMPLES,
 };
-use std::time::Duration;
-use std::path::PathBuf;
 use std::fs;
+use std::path::PathBuf;
+use std::time::Duration;
 
 #[derive(Debug)]
 struct Args {
@@ -29,6 +29,7 @@ struct Args {
     no_split: bool,
     silence_ms: Option<u64>,
     max_phonemes: Option<usize>,
+    device: String,
 }
 
 impl Args {
@@ -47,6 +48,7 @@ impl Args {
             no_split: false,
             silence_ms: None,
             max_phonemes: None,
+            device: "auto".to_string(),
         };
         while let Some(arg) = args.next() {
             match arg.as_str() {
@@ -55,28 +57,26 @@ impl Args {
                 }
                 "--voice" => parsed.voice = PathBuf::from(args.next().context("--voice")?),
                 "--text" => parsed.text = Some(args.next().context("--text")?),
-                 "--infile" => parsed.infile = Some(PathBuf::from(args.next().context("--infile")?)),
-                 "--phonemes" => parsed.phonemes = Some(args.next().context("--phonemes")?),
+                "--infile" => parsed.infile = Some(PathBuf::from(args.next().context("--infile")?)),
+                "--phonemes" => parsed.phonemes = Some(args.next().context("--phonemes")?),
                 "--out" => parsed.out = PathBuf::from(args.next().context("--out")?),
                 "--speed" => parsed.speed = args.next().context("--speed")?.parse()?,
                 "--verbose" => parsed.verbose = true,
                 "--play" => parsed.play = true,
                 "--no-split" => parsed.no_split = true,
                 "--silence-ms" => {
-                    parsed.silence_ms = Some(
-                        args.next().context("--silence-ms")?.parse::<u64>()?,
-                    );
+                    parsed.silence_ms = Some(args.next().context("--silence-ms")?.parse::<u64>()?);
                 }
                 "--max-phonemes" => {
-                    parsed.max_phonemes = Some(
-                        args.next().context("--max-phonemes")?.parse::<usize>()?,
-                    );
+                    parsed.max_phonemes =
+                        Some(args.next().context("--max-phonemes")?.parse::<usize>()?);
                 }
+                "--device" => parsed.device = args.next().context("--device")?,
                 "--help" | "-h" => {
                     println!(
                         "usage: cargo run --release --bin speak -- [--model-dir DIR] [--voice PATH]\n\
                          \t[--text \"...\" | --infile FILE | --phonemes \"...\"]\n\
-                         \t[--out FILE] [--speed F] [--verbose] [--play]\n\
+                         \t[--out FILE] [--speed F] [--device auto|cpu|metal] [--verbose] [--play]\n\
                          \t[--no-split] [--silence-ms N] [--max-phonemes N]"
                     );
                     std::process::exit(0);
@@ -88,8 +88,29 @@ impl Args {
     }
 }
 
+fn resolve_device(spec: &str) -> Result<Device> {
+    match spec {
+        "auto" => Ok(default_device()),
+        "cpu" => Ok(Device::Cpu),
+        "metal" => {
+            #[cfg(feature = "metal")]
+            {
+                Device::new_metal(0).context("Metal device not available")
+            }
+            #[cfg(not(feature = "metal"))]
+            {
+                bail!("--device metal requires building with --features metal")
+            }
+        }
+        other => bail!("unknown --device {other}; expected auto, cpu, or metal"),
+    }
+}
+
 fn main() -> Result<()> {
-    tracing_subscriber::fmt::try_init().ok();
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::INFO)
+        .try_init()
+        .ok();
     let mut args = Args::parse()?;
     if let Some(ref infile) = args.infile {
         args.text = Some(
@@ -97,7 +118,8 @@ fn main() -> Result<()> {
                 .with_context(|| format!("reading infile {}", infile.display()))?,
         );
     }
-    let device = default_device();
+    let device = resolve_device(&args.device)?;
+    tracing::info!("device: {:?}", device);
     let model_dir = resolve_resource_path(&args.model_dir);
     let voice = resolve_resource_path(&args.voice);
 
@@ -157,36 +179,34 @@ fn synthesize(
     };
     let progress: ProgressFn = {
         let verbose = args.verbose;
-        Box::new(move |sentence: &str, current: usize, total: usize, elapsed: Duration| {
-            let pct = current as f64 / total as f64 * 100.0;
-            let elapsed_s = elapsed.as_secs_f64();
-            let eta = if current > 0 && current < total {
-                let avg = elapsed_s / current as f64;
-                let remaining = (total - current) as f64 * avg;
-                format!("{remaining:.1}s")
-            } else {
-                String::new()
-            };
-            let snippet = if sentence.chars().count() > 60 {
-                let cut: String = sentence.chars().take(60).collect();
-                format!("{cut}...")
-            } else {
-                sentence.to_string()
-            };
-            println!(
+        Box::new(
+            move |sentence: &str, current: usize, total: usize, elapsed: Duration| {
+                let pct = current as f64 / total as f64 * 100.0;
+                let elapsed_s = elapsed.as_secs_f64();
+                let eta = if current > 0 && current < total {
+                    let avg = elapsed_s / current as f64;
+                    let remaining = (total - current) as f64 * avg;
+                    format!("{remaining:.1}s")
+                } else {
+                    String::new()
+                };
+                let snippet = if sentence.chars().count() > 60 {
+                    let cut: String = sentence.chars().take(60).collect();
+                    format!("{cut}...")
+                } else {
+                    sentence.to_string()
+                };
+                println!(
                 "  {snippet:>65.65}  {current:>3}/{total} ({pct:5.1}%) elapsed={elapsed_s:.1}s ETA={eta}"
             );
-            if verbose {
-                println!(
-                    "    (chunk {current}/{total})"
-                );
-            }
-        })
+                if verbose {
+                    println!("    (chunk {current}/{total})");
+                }
+            },
+        )
     };
     let samples = match (&args.phonemes, &args.text) {
-        (Some(p), _) => synthesize_phonemes(
-            model, p, voice, args.speed, device,
-        )?,
+        (Some(p), _) => synthesize_phonemes(model, p, voice, args.speed, device)?,
         (None, Some(t)) => synthesize_text_opts(
             model,
             &phonemizer,

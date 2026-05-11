@@ -5,14 +5,14 @@ pub mod synthesis;
 
 use candle_core::Device;
 
-/// Returns the default device: Metal if the `metal` feature is enabled, otherwise CPU.
+/// Returns the default device: Metal if available with the `metal` feature, otherwise CPU.
 pub fn default_device() -> Device {
     #[cfg(feature = "metal")]
     {
-        Device::new_metal(0).expect("Metal device not available")
+        match Device::new_metal(0) {
+            Ok(d) => return d,
+            Err(e) => tracing::warn!("Metal unavailable, falling back to CPU: {e}"),
+        }
     }
-    #[cfg(not(feature = "metal"))]
-    {
-        Device::Cpu
-    }
+    Device::Cpu
 }

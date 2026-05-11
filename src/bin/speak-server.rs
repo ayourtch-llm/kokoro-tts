@@ -30,6 +30,7 @@ struct Args {
     reference_out: Option<String>,
     speed: f64,
     verbose: bool,
+    device: String,
 }
 
 impl Args {
@@ -44,6 +45,7 @@ impl Args {
             reference_out: None,
             speed: 1.0,
             verbose: false,
+            device: "auto".to_string(),
         };
         while let Some(arg) = args.next() {
             match arg.as_str() {
@@ -61,10 +63,11 @@ impl Args {
                     parsed.reference_out = Some(args.next().context("--reference-out")?)
                 }
                 "--speed" => parsed.speed = args.next().context("--speed")?.parse()?,
+                "--device" => parsed.device = args.next().context("--device")?,
                 "--verbose" => parsed.verbose = true,
                 "--help" | "-h" => {
                     println!(
-                        "usage: cargo run --release --bin speak-server -- [--listen HOST:PORT] [--http-listen HOST:PORT] [--model-dir DIR] [--voice PATH] [--save-wav-dir DIR] [--reference-out HOST:PORT] [--speed F] [--verbose]"
+                        "usage: cargo run --release --bin speak-server -- [--listen HOST:PORT] [--http-listen HOST:PORT] [--model-dir DIR] [--voice PATH] [--save-wav-dir DIR] [--reference-out HOST:PORT] [--speed F] [--device auto|cpu|metal] [--verbose]"
                     );
                     std::process::exit(0);
                 }
@@ -75,10 +78,32 @@ impl Args {
     }
 }
 
+fn resolve_device(spec: &str) -> Result<Device> {
+    match spec {
+        "auto" => Ok(default_device()),
+        "cpu" => Ok(Device::Cpu),
+        "metal" => {
+            #[cfg(feature = "metal")]
+            {
+                Device::new_metal(0).context("Metal device not available")
+            }
+            #[cfg(not(feature = "metal"))]
+            {
+                bail!("--device metal requires building with --features metal")
+            }
+        }
+        other => bail!("unknown --device {other}; expected auto, cpu, or metal"),
+    }
+}
+
 fn main() -> Result<()> {
-    tracing_subscriber::fmt::try_init().ok();
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::INFO)
+        .try_init()
+        .ok();
     let args = Args::parse()?;
-    let device = default_device();
+    let device = resolve_device(&args.device)?;
+    tracing::info!("device: {:?}", device);
     let model_dir = resolve_resource_path(&args.model_dir);
     let voice = resolve_resource_path(&args.voice);
     let reference_out = args
@@ -102,6 +127,7 @@ fn main() -> Result<()> {
         save_wav_dir: args.save_wav_dir.clone(),
         speed: args.speed,
         verbose: args.verbose,
+        device,
     };
 
     let socket = UdpSocket::bind(&args.listen)
@@ -161,6 +187,7 @@ struct WorkerState {
     save_wav_dir: Option<PathBuf>,
     speed: f64,
     verbose: bool,
+    device: Device,
 }
 
 #[derive(Clone)]
@@ -392,7 +419,7 @@ fn synthesize_phrase(state: &WorkerState, text: &str) -> Result<SynthesizedPhras
         text,
         &state.voice,
         state.speed,
-        &default_device(),
+        &state.device,
         state.verbose,
     )?;
     let synth_elapsed = synth_start.elapsed();
