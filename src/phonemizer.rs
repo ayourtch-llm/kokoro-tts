@@ -161,14 +161,21 @@ fn phonemize_word(
             return ipa;
         }
         if normalize::is_all_caps_acronym(base) {
-            // Same emphasis-vs-acronym heuristic as the non-possessive path:
-            // gold-only lookup so CMUdict acronym spell-outs don't fire.
-            if base.len() >= 3 {
+            // Same emphasis-vs-acronym heuristic as the non-possessive path.
+            let len = base.len();
+            if len >= 3 {
                 let lower = base.to_ascii_lowercase();
-                if let Some(ipa) = gold.lookup(&lower) {
-                    let mut ipa = ipa.to_owned();
+                let real_word = gold.lookup(&lower).map(str::to_owned).or_else(|| {
+                    if len >= 6 {
+                        lexicon.lookup(&lower).map(arpabet::phones_to_ipa)
+                    } else {
+                        None
+                    }
+                });
+                if let Some(mut ipa) = real_word {
                     if possessive {
-                        ipa.push_str(possessive_phone_after(&ipa));
+                        let suffix = possessive_phone_after(&ipa);
+                        ipa.push_str(suffix);
                     }
                     return ipa;
                 }
@@ -186,15 +193,24 @@ fn phonemize_word(
     if normalize::is_all_caps_acronym(word) {
         // Treat all-caps emphasis like a normal word when the lowercased form
         // is a real word in misaki-gold ("WAR" → "war", "STOP" → "stop",
-        // "NEVER" → "never"). Only use the curated gold dict — CMUdict has
-        // explicit entries for acronyms like "FBI" → "EH1 F B IY1 AY1"
-        // which a CMU lookup would treat as a "word" and break spell-out.
-        // 2-letter all-caps tokens are kept as letter spelling because
-        // "IT"/"ID"/"AI"/"OK" are far more often acronyms than emphasis.
-        if word.len() >= 3 {
+        // "NEVER" → "never"). For length-3-5 stay gold-only — CMUdict has
+        // explicit spelled-out entries for short acronyms like
+        // "FBI" → "EH1 F B IY1 AY1" that a CMU lookup would mistake for a
+        // "word" pronunciation. For length ≥ 6, fall back to CMUdict so
+        // plural emphasis like "SYSTEMS", "PROBLEMS", "QUESTIONS",
+        // "ACKNOWLEDGMENTS" (in CMUdict but not gold) reads as words.
+        // 2-letter all-caps tokens stay letter-spelled because
+        // "IT"/"ID"/"AI"/"OK" are usually initialisms, not emphasis.
+        let len = word.len();
+        if len >= 3 {
             let lower = word.to_ascii_lowercase();
             if let Some(ipa) = gold.lookup(&lower) {
                 return ipa.to_owned();
+            }
+            if len >= 6 {
+                if let Some(ipa) = lexicon.lookup(&lower).map(arpabet::phones_to_ipa) {
+                    return ipa;
+                }
             }
         }
         return spell_out_word(word);
