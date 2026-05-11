@@ -4,6 +4,8 @@ use candle_core::{IndexOp, Result, Tensor};
 use candle_nn::rnn::Direction;
 use candle_nn::{LSTMConfig, Module, VarBuilder, LSTM, RNN};
 
+use crate::model::upsample::upsample_nearest1d;
+
 fn fold_weight_norm_conv1d(
     in_channels: usize,
     out_channels: usize,
@@ -392,7 +394,7 @@ impl AdainResBlk1d {
 
     fn _shortcut(&self, x: &Tensor) -> Result<Tensor> {
         let x = if self.upsample {
-            x.upsample_nearest1d(x.dim(2)? * 2)?
+            upsample_nearest1d(x, x.dim(2)? * 2)?
         } else {
             x.clone()
         };

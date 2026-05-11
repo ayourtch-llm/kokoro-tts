@@ -6,6 +6,7 @@ use candle_nn::{Module, VarBuilder};
 use crate::model::decoder::{fold_weight_norm_conv1d, fold_weight_norm_conv_transpose1d, AdaIN1d};
 use crate::model::source::{SourceModuleHnNsf, KOKORO_UPSAMPLE_SCALE};
 use crate::model::stft::CustomStft;
+use crate::model::upsample::upsample_nearest1d;
 
 pub struct Snake1d {
     alpha: Tensor,
@@ -335,9 +336,8 @@ impl Generator {
         // f0: [B, T_f0]   (note: F0_curve from predictor is [B, 2*T_dec])
         // f0_upsample_factor = prod(upsample_rates) * hop_size  (= 300 for Kokoro)
         let f0_audio_len = f0.dim(1)? * self.f0_upsample_factor;
-        let f0_up = f0
-            .unsqueeze(1)? // [B, 1, T_f0]
-            .upsample_nearest1d(f0_audio_len)? // [B, 1, T_audio]
+        let f0_up = f0.unsqueeze(1)?; // [B, 1, T_f0]
+        let f0_up = upsample_nearest1d(&f0_up, f0_audio_len)? // [B, 1, T_audio]
             .transpose(1, 2)?; // [B, T_audio, 1]
 
         // NSF source: [B, T_audio, 1] sine_merge → squeeze → [B, T_audio]
@@ -397,10 +397,8 @@ impl Generator {
         dump_dir: &std::path::Path,
     ) -> Result<Tensor> {
         let f0_audio_len = f0.dim(1)? * self.f0_upsample_factor;
-        let f0_up = f0
-            .unsqueeze(1)?
-            .upsample_nearest1d(f0_audio_len)?
-            .transpose(1, 2)?;
+        let f0_up = f0.unsqueeze(1)?;
+        let f0_up = upsample_nearest1d(&f0_up, f0_audio_len)?.transpose(1, 2)?;
         let (har_source_3d, _, _) = self
             .m_source
             .forward_with_controls(&f0_up, rand_ini, noise)?;

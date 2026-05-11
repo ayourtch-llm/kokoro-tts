@@ -8,6 +8,7 @@ pub mod predictor;
 pub mod source;
 pub mod stft;
 pub mod text_encoder;
+mod upsample;
 
 pub use config::Config;
 

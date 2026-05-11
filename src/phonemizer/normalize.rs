@@ -1267,7 +1267,10 @@ fn integer_to_words(raw: &str) -> String {
     if n == 0 {
         return "zero".to_string();
     }
-    const SCALES: [&str; 4] = ["", "thousand", "million", "billion"];
+    const SCALES: [&str; 10] = [
+        "", "thousand", "million", "billion", "trillion",
+        "quadrillion", "quintillion", "sextillion", "septillion", "octillion",
+    ];
     let mut chunks = Vec::new();
     let mut remaining = n;
     let mut scale = 0usize;
@@ -1275,9 +1278,14 @@ fn integer_to_words(raw: &str) -> String {
         let group = (remaining % 1000) as u16;
         if group != 0 {
             let mut part = convert_hundreds(group);
-            if !SCALES[scale].is_empty() {
+            let scale_name = if scale < SCALES.len() {
+                SCALES[scale]
+            } else {
+                ""
+            };
+            if !scale_name.is_empty() {
                 part.push(' ');
-                part.push_str(SCALES[scale]);
+                part.push_str(scale_name);
             }
             chunks.push(part);
         }

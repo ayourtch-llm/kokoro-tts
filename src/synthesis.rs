@@ -91,27 +91,37 @@ pub fn synthesize_text_opts(
         vec![text.to_string()]
     };
 
-    let mut phonemes_chunks: Vec<String> = Vec::with_capacity(sentences.len());
+    enum Chunk {
+        Skipped,
+        Processed(String, String), // (original_sentence, phonemes)
+    }
+
+    let mut chunks: Vec<Chunk> = Vec::with_capacity(sentences.len());
     for sentence in &sentences {
         let p = phonemizer
             .phonemize(sentence)
             .with_context(|| format!("phonemizing sentence: {:?}", sentence))?;
         if p.is_empty() {
-            bail!("phonemizer produced no phonemes for sentence: {sentence}");
+            eprintln!("  (skipping sentence with no phonemes: {sentence:?})");
+            chunks.push(Chunk::Skipped);
+        } else {
+            chunks.push(Chunk::Processed(sentence.to_string(), p));
         }
-        phonemes_chunks.push(p);
     }
 
-    if phonemes_chunks.is_empty() {
+    let processed: Vec<&Chunk> = chunks.iter().filter(|c| matches!(c, Chunk::Processed(..))).collect();
+    if processed.is_empty() {
         bail!("phonemizer produced no chunks");
     }
 
     let mut audio_chunks = Vec::new();
-    let total = phonemes_chunks.len();
+    let total = processed.len();
     let t0 = std::time::Instant::now();
     for idx in 0..total {
-        let sentence: &String = &sentences[idx];
-        let phonemes: &String = &phonemes_chunks[idx];
+        let (sentence, phonemes) = match &processed[idx] {
+            Chunk::Processed(s, p) => (s, p),
+            _ => unreachable!(),
+        };
         let phoneme_count = phonemes.chars().count();
         if phoneme_count > opts.max_sentence_phonemes {
             bail!(

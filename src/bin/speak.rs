@@ -3,6 +3,7 @@
 use anyhow::{bail, Context, Result};
 use candle_core::{DType, Device};
 use kokoro_tts::audio::play_samples;
+use kokoro_tts::default_device;
 use kokoro_tts::model::Kokoro;
 use kokoro_tts::phonemizer::{TwoTierPhonemizer, MILESTONE_TEST_PHONEMES};
 use kokoro_tts::synthesis::resolve_resource_path;
@@ -96,7 +97,7 @@ fn main() -> Result<()> {
                 .with_context(|| format!("reading infile {}", infile.display()))?,
         );
     }
-    let device = Device::Cpu;
+    let device = default_device();
     let model_dir = resolve_resource_path(&args.model_dir);
     let voice = resolve_resource_path(&args.voice);
 
@@ -166,8 +167,8 @@ fn synthesize(
             } else {
                 String::new()
             };
-            let snippet = if sentence.len() > 60 {
-                let cut = &sentence[..60];
+            let snippet = if sentence.chars().count() > 60 {
+                let cut: String = sentence.chars().take(60).collect();
                 format!("{cut}...")
             } else {
                 sentence.to_string()

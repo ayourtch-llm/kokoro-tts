@@ -3,6 +3,7 @@
 use anyhow::{bail, Context, Result};
 use candle_core::Device;
 use kokoro_tts::audio::{StreamingAudioHandle, StreamingAudioOutput};
+use kokoro_tts::default_device;
 use kokoro_tts::model::Kokoro;
 use kokoro_tts::phonemizer::TwoTierPhonemizer;
 use kokoro_tts::synthesis::{
@@ -77,7 +78,7 @@ impl Args {
 fn main() -> Result<()> {
     tracing_subscriber::fmt::try_init().ok();
     let args = Args::parse()?;
-    let device = Device::Cpu;
+    let device = default_device();
     let model_dir = resolve_resource_path(&args.model_dir);
     let voice = resolve_resource_path(&args.voice);
     let reference_out = args
@@ -391,7 +392,7 @@ fn synthesize_phrase(state: &WorkerState, text: &str) -> Result<SynthesizedPhras
         text,
         &state.voice,
         state.speed,
-        &Device::Cpu,
+        &default_device(),
         state.verbose,
     )?;
     let synth_elapsed = synth_start.elapsed();
