@@ -158,10 +158,24 @@ fn resample_24k_to_16k(input: &[f32]) -> Vec<f32> {
     out
 }
 
-/// Word-level error rate after lowercase + strip punctuation + collapse
-/// whitespace. `wer = edits / max(ref_words, hyp_words)`.
+/// Word-level error rate after pre-normalization. We measure pronunciation
+/// fidelity, not transcription style, so the reference text goes through the
+/// same number/date/etc. expansion that the phonemizer does ("20" →
+/// "twenty", "1920s" → "nineteen twenties") before comparison — otherwise
+/// every digit/decade/date in the corpus shows up as a spurious WER edit.
+/// `wer = edits / max(ref_words, hyp_words)`.
 fn normalize_for_wer(s: &str) -> Vec<String> {
-    s.to_lowercase()
+    use kokoro_tts::phonemizer::{
+        normalize_abbreviations, normalize_acronyms, normalize_cardinals, normalize_dates,
+        normalize_math, normalize_money_time, normalize_units,
+    };
+    let expanded = normalize_cardinals(&normalize_acronyms(&normalize_units(
+        &normalize_money_time(&normalize_math(&normalize_dates(
+            &normalize_abbreviations(s),
+        ))),
+    )));
+    expanded
+        .to_lowercase()
         .chars()
         .map(|c| if c.is_alphanumeric() || c.is_whitespace() { c } else { ' ' })
         .collect::<String>()
