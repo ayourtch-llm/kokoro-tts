@@ -33,11 +33,20 @@ pub fn normalize_abbreviations(text: &str) -> String {
 }
 
 pub fn normalize_acronyms(text: &str) -> String {
+    normalize_acronyms_with(text, |_| false)
+}
+
+/// Variant of `normalize_acronyms` that lets the caller suppress the
+/// spell-out for tokens whose lowercased form is a real word (so
+/// "BUT FIND LIVINGSTONE!" stays as words for the emphasis path in
+/// `phonemize_word` to handle, instead of being pre-spelled to
+/// "B U T F I N D L I V I N G S T O N E").
+pub fn normalize_acronyms_with<F: Fn(&str) -> bool>(text: &str, is_real_word: F) -> String {
     let chars: Vec<char> = text.chars().collect();
     let mut out = String::new();
     let mut i = 0;
     while i < chars.len() {
-        if let Some((replacement, consumed)) = match_acronym(&chars, i) {
+        if let Some((replacement, consumed)) = match_acronym_with(&chars, i, &is_real_word) {
             out.push_str(&replacement);
             i += consumed;
         } else {
@@ -510,6 +519,14 @@ fn match_abbreviation(chars: &[char], start: usize) -> Option<(&'static str, usi
 }
 
 fn match_acronym(chars: &[char], start: usize) -> Option<(String, usize)> {
+    match_acronym_with(chars, start, &|_| false)
+}
+
+fn match_acronym_with<F: Fn(&str) -> bool>(
+    chars: &[char],
+    start: usize,
+    is_real_word: &F,
+) -> Option<(String, usize)> {
     let tail = chars.get(start..)?;
     let mut end = 0usize;
     while let Some(ch) = tail.get(end) {
@@ -534,11 +551,15 @@ fn match_acronym(chars: &[char], start: usize) -> Option<(String, usize)> {
         return None;
     }
     if possessive || is_pronounce_as_word_acronym(base) {
-        Some((token, end))
-    } else {
-        let replacement = spaced_letters(base);
-        Some((replacement, end))
+        return Some((token, end));
     }
+    // Leave words-in-emphasis alone so phonemize_word's all-caps
+    // emphasis branch reads them as words ("BUT" → /bʌt/, not "B U T").
+    if is_real_word(base) {
+        return Some((base.to_string(), end));
+    }
+    let replacement = spaced_letters(base);
+    Some((replacement, end))
 }
 
 fn split_possessive(token: &str) -> Option<(&str, bool)> {

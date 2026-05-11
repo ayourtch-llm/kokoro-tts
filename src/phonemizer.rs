@@ -111,11 +111,29 @@ fn phonemize_chunk(
     gold: &misaki_gold::MisakiGoldLexicon,
     lexicon: &lexicon::Lexicon,
 ) -> String {
-    let text = normalize_cardinals(&normalize::normalize_acronyms(&normalize::normalize_units(
-        &normalize::normalize_money_time(&normalize::normalize_math(&normalize::normalize_dates(
-            &normalize::normalize_abbreviations(text),
+    let is_emphasis_word = |base: &str| -> bool {
+        // Mirror phonemize_word's all-caps emphasis: a lowercased
+        // all-caps token reads as a word when it's in gold (len ≥ 3)
+        // or in CMUdict (len ≥ 6). Otherwise it's spelled out.
+        let lower = base.to_ascii_lowercase();
+        let len = base.len();
+        if len < 3 {
+            return false;
+        }
+        if gold.lookup(&lower).is_some() {
+            return true;
+        }
+        if len >= 6 && lexicon.lookup(&lower).is_some() {
+            return true;
+        }
+        false
+    };
+    let text = normalize_cardinals(&normalize::normalize_acronyms_with(
+        &normalize::normalize_units(&normalize::normalize_money_time(&normalize::normalize_math(
+            &normalize::normalize_dates(&normalize::normalize_abbreviations(text)),
         ))),
-    )));
+        is_emphasis_word,
+    ));
     let tokens = tokenize(text);
     let word_tokens: Vec<&str> = tokens
         .iter()
