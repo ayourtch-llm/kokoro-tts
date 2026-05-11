@@ -203,7 +203,38 @@ fn phonemize_word(
         .map(str::to_owned)
         .or_else(|| lexicon.lookup(&word).map(arpabet::phones_to_ipa))
         .or_else(|| try_possessive(word, ctx, gold, lexicon))
+        .or_else(|| try_hyphenated(word, ctx, gold, lexicon))
         .unwrap_or_else(|| lts::pronounce_oov(word))
+}
+
+/// Handle a hyphenated compound like "pre-war", "one-twelfth", "well-known"
+/// when the whole token misses the lexicon. Split on '-', phonemize each
+/// part via the full pipeline (so common parts like "one" get their
+/// canonical /wʌn/ from gold rather than an LTS approximation), and join
+/// with no separator — kokoro's prosody handles the syllable boundary.
+/// Returns None for words without a hyphen or with empty fragments.
+fn try_hyphenated(
+    word: &str,
+    ctx: &homograph::WordContext<'_>,
+    gold: &misaki_gold::MisakiGoldLexicon,
+    lexicon: &lexicon::Lexicon,
+) -> Option<String> {
+    if !word.contains('-') {
+        return None;
+    }
+    let parts: Vec<&str> = word.split('-').filter(|p| !p.is_empty()).collect();
+    if parts.len() < 2 {
+        return None;
+    }
+    let mut out = String::new();
+    for part in parts {
+        out.push_str(&phonemize_word(part, ctx, gold, lexicon));
+    }
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
+    }
 }
 
 /// Handle a possessive like "mark's" / "Germany's" / "country's" that
