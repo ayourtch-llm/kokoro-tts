@@ -149,9 +149,15 @@ pub fn pre_phonemize_normalize(text: &str) -> String {
     // En-dash and minus sign frequently appear in math/poker contexts
     // as the unary "negative" marker; fold them to ASCII hyphen so
     // normalize_math's "-" handling can route them to " minus ".
+    // Editorial square brackets ('[B]efore', '[citation]') aren't
+    // spoken markup; strip them so the wrapped content reads naturally.
     let dashed: String = text
         .chars()
-        .map(|c| if matches!(c, '–' | '−') { '-' } else { c })
+        .filter_map(|c| match c {
+            '–' | '−' => Some('-'),
+            '[' | ']' => None,
+            _ => Some(c),
+        })
         .collect();
     let cards = normalize::normalize_card_suits(&dashed);
     let folded = normalize::fold_diacritics(&cards);
