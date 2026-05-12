@@ -36,6 +36,85 @@ pub fn normalize_acronyms(text: &str) -> String {
     normalize_acronyms_with(text, |_| false)
 }
 
+/// Lowercase 2-letter all-caps function words ("TO", "ON", "IN", …)
+/// when adjacent to a 3+ letter all-caps token, so phrases like
+/// "COME TO PARIS ON IMPORTANT BUSINESS" don't get the 2-letter
+/// function words spelled out as "T O", "O N".
+///
+/// Isolated 2-letter all-caps tokens (UK, US, AS, IT in initialism
+/// position) are left alone.
+pub fn lowercase_emphasis_function_words(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    // Pass 1: collect alpha-token spans.
+    let mut tokens: Vec<(usize, usize)> = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i].is_ascii_alphabetic() {
+            let start = i;
+            while i < chars.len() && chars[i].is_ascii_alphabetic() {
+                i += 1;
+            }
+            tokens.push((start, i));
+        } else {
+            i += 1;
+        }
+    }
+    // Identify 2-letter all-caps tokens to lowercase.
+    let mut to_lower = vec![false; tokens.len()];
+    for idx in 0..tokens.len() {
+        let (s, e) = tokens[idx];
+        if e - s != 2 {
+            continue;
+        }
+        let tok: String = chars[s..e].iter().collect();
+        if !is_all_caps_acronym(&tok) {
+            continue;
+        }
+        let lower = tok.to_ascii_lowercase();
+        if !is_emphasis_function_word(&lower) {
+            continue;
+        }
+        let neighbor_is_caps_word = |nidx: usize| -> bool {
+            let (ns, ne) = tokens[nidx];
+            if ne - ns < 3 {
+                return false;
+            }
+            let nt: String = chars[ns..ne].iter().collect();
+            is_all_caps_acronym(&nt)
+        };
+        let prev_ok = idx > 0 && neighbor_is_caps_word(idx - 1);
+        let next_ok = idx + 1 < tokens.len() && neighbor_is_caps_word(idx + 1);
+        if prev_ok || next_ok {
+            to_lower[idx] = true;
+        }
+    }
+    // Pass 2: rebuild string.
+    let mut out = String::with_capacity(text.len());
+    let mut cursor = 0;
+    for (idx, &(s, e)) in tokens.iter().enumerate() {
+        out.extend(chars[cursor..s].iter());
+        if to_lower[idx] {
+            for c in &chars[s..e] {
+                out.push(c.to_ascii_lowercase());
+            }
+        } else {
+            out.extend(chars[s..e].iter());
+        }
+        cursor = e;
+    }
+    out.extend(chars[cursor..].iter());
+    out
+}
+
+fn is_emphasis_function_word(lower: &str) -> bool {
+    matches!(
+        lower,
+        "to" | "in" | "on" | "at" | "of" | "or" | "as" | "by"
+        | "is" | "be" | "an" | "no" | "so" | "we" | "he" | "my"
+        | "me" | "do" | "if" | "it" | "up" | "am" | "go"
+    )
+}
+
 /// Variant of `normalize_acronyms` that lets the caller suppress the
 /// spell-out for tokens whose lowercased form is a real word (so
 /// "BUT FIND LIVINGSTONE!" stays as words for the emphasis path in
@@ -1441,9 +1520,27 @@ const TENS: [&str; 10] = [
 #[cfg(test)]
 mod tests {
     use super::{
-        normalize_abbreviations, normalize_acronyms, normalize_cardinals, normalize_dates,
-        normalize_math, normalize_money_time, normalize_units,
+        lowercase_emphasis_function_words, normalize_abbreviations, normalize_acronyms,
+        normalize_cardinals, normalize_dates, normalize_math, normalize_money_time, normalize_units,
     };
+
+    #[test]
+    fn lowercases_two_letter_function_words_in_emphasis_runs() {
+        assert_eq!(
+            lowercase_emphasis_function_words("COME TO PARIS ON IMPORTANT BUSINESS"),
+            "COME to PARIS on IMPORTANT BUSINESS"
+        );
+        assert_eq!(
+            lowercase_emphasis_function_words("BUT FIND LIVINGSTONE"),
+            "BUT FIND LIVINGSTONE"
+        );
+    }
+
+    #[test]
+    fn leaves_isolated_two_letter_caps_alone() {
+        assert_eq!(lowercase_emphasis_function_words("the US economy"), "the US economy");
+        assert_eq!(lowercase_emphasis_function_words("In IT we trust"), "In IT we trust");
+    }
 
     #[test]
     fn normalizes_simple_integers() {

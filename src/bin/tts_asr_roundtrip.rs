@@ -165,15 +165,7 @@ fn resample_24k_to_16k(input: &[f32]) -> Vec<f32> {
 /// every digit/decade/date in the corpus shows up as a spurious WER edit.
 /// `wer = edits / max(ref_words, hyp_words)`.
 fn normalize_for_wer(s: &str) -> Vec<String> {
-    use kokoro_tts::phonemizer::{
-        normalize_abbreviations, normalize_acronyms, normalize_cardinals, normalize_dates,
-        normalize_math, normalize_money_time, normalize_units,
-    };
-    let expanded = normalize_cardinals(&normalize_acronyms(&normalize_units(
-        &normalize_money_time(&normalize_math(&normalize_dates(
-            &normalize_abbreviations(s),
-        ))),
-    )));
+    let expanded = kokoro_tts::phonemizer::pre_phonemize_normalize(s);
     expanded
         .to_lowercase()
         .chars()

@@ -106,15 +106,13 @@ enum Token {
     Punct(char),
 }
 
-fn phonemize_chunk(
-    text: &str,
-    gold: &misaki_gold::MisakiGoldLexicon,
-    lexicon: &lexicon::Lexicon,
-) -> String {
+/// Run the full TTS pre-phonemize normalization cascade on text.
+/// Exposed so the round-trip harness can normalize WER reference and
+/// hypothesis identically to what the synthesis pipeline sees.
+pub fn pre_phonemize_normalize(text: &str) -> String {
+    let gold = misaki_gold::lexicon();
+    let lexicon = lexicon::lexicon();
     let is_emphasis_word = |base: &str| -> bool {
-        // Mirror phonemize_word's all-caps emphasis: a lowercased
-        // all-caps token reads as a word when it's in gold (len ≥ 3)
-        // or in CMUdict (len ≥ 6). Otherwise it's spelled out.
         let lower = base.to_ascii_lowercase();
         let len = base.len();
         if len < 3 {
@@ -128,12 +126,22 @@ fn phonemize_chunk(
         }
         false
     };
-    let text = normalize_cardinals(&normalize::normalize_acronyms_with(
-        &normalize::normalize_units(&normalize::normalize_money_time(&normalize::normalize_math(
-            &normalize::normalize_dates(&normalize::normalize_abbreviations(text)),
-        ))),
+    normalize_cardinals(&normalize::normalize_acronyms_with(
+        &normalize::lowercase_emphasis_function_words(&normalize::normalize_units(
+            &normalize::normalize_money_time(&normalize::normalize_math(
+                &normalize::normalize_dates(&normalize::normalize_abbreviations(text)),
+            )),
+        )),
         is_emphasis_word,
-    ));
+    ))
+}
+
+fn phonemize_chunk(
+    text: &str,
+    gold: &misaki_gold::MisakiGoldLexicon,
+    lexicon: &lexicon::Lexicon,
+) -> String {
+    let text = pre_phonemize_normalize(text);
     let tokens = tokenize(text);
     let word_tokens: Vec<&str> = tokens
         .iter()
