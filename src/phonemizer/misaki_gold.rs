@@ -31,6 +31,13 @@ impl MisakiGoldLexicon {
                     .or_insert_with(|| ipa.clone());
             }
         }
+        // Curated overrides for loanwords where the CMUdict / LTS
+        // fallback gets it badly wrong (typically because a fragment
+        // collides with a Greek-letter entry like "chi" → /kaɪ/).
+        for (key, ipa) in CURATED_OVERRIDES {
+            entries.insert((*key).to_string(), (*ipa).to_string());
+            entries.insert(key.to_ascii_lowercase(), (*ipa).to_string());
+        }
         Self { entries }
     }
 
@@ -42,6 +49,18 @@ impl MisakiGoldLexicon {
         })
     }
 }
+
+/// Hyphenated and other loanwords where neither gold's JSON nor the
+/// CMUdict / LTS fallback gives a sensible English-loan pronunciation.
+const CURATED_OVERRIDES: &[(&str, &str)] = &[
+    ("tai-chi", "tˈaɪʧˌi"),
+    ("taichi", "tˈaɪʧˌi"),
+    ("qi-gong", "ʧˈiɡˌɔŋ"),
+    ("qigong", "ʧˈiɡˌɔŋ"),
+    ("kung-fu", "kˌʌŋfˈu"),
+    ("jiu-jitsu", "ʤˌuʤˈɪtsu"),
+    ("aikido", "aɪkˈido"),
+];
 
 fn flatten_value(value: &Value) -> Option<String> {
     match value {

@@ -57,6 +57,13 @@ pub use normalize::normalize_money_time;
 #[allow(unused_imports)]
 pub use normalize::normalize_units;
 
+pub fn lexicon_for_test(word: &str) -> Vec<String> {
+    lexicon::lexicon()
+        .lookup(word)
+        .map(|phs| phs.iter().map(|s| (*s).to_string()).collect())
+        .unwrap_or_default()
+}
+
 pub fn normalize_urls_for_test(s: &str) -> String {
     normalize::normalize_urls(s)
 }
@@ -524,7 +531,10 @@ fn possessive_phone_after(ipa: &str) -> &'static str {
         }
     }
     match chars.last() {
-        Some('s') | Some('z') | Some('ʃ') | Some('ʒ') => "ɪz",
+        // Sibilants (including the single-codepoint ligatures ʧ /tʃ/
+        // and ʤ /dʒ/ that gold/arpabet emit) take the /ɪz/ allomorph —
+        // "changes" → /tʃeɪndʒ/ + /ɪz/, not bare /z/.
+        Some('s') | Some('z') | Some('ʃ') | Some('ʒ') | Some('ʧ') | Some('ʤ') => "ɪz",
         Some('p') | Some('t') | Some('k') | Some('f') | Some('θ') => "s",
         _ => "z",
     }
