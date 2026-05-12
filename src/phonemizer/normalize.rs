@@ -133,6 +133,9 @@ fn match_url(chars: &[char], start: usize) -> Option<(String, usize)> {
         return None;
     }
     let span: String = chars[start..scan_end].iter().collect();
+    if let Some(ip) = match_ip_address(&span) {
+        return Some((format!(" {ip} "), span.chars().count()));
+    }
     let lower = span.to_ascii_lowercase();
     let looks_url = lower.starts_with("http://")
         || lower.starts_with("https://")
@@ -177,6 +180,11 @@ fn match_url(chars: &[char], start: usize) -> Option<(String, usize)> {
     }
     let mut prev_class: Option<u8> = None;
     for ch in url_part[cursor..].chars() {
+        // Lowercase all-uppercase letters inside the URL so filename-style
+        // all-caps tokens ("README", "CHANGELOG") don't trigger the
+        // letter-spelled emphasis path — in a URL they're words, not
+        // initialisms.
+        let ch = ch.to_ascii_lowercase();
         // Insert a space at letter↔digit boundaries so identifiers like
         // "ch01" / "page42" don't lose their digits when tokenize drops
         // non-alphabetic characters that haven't been turned into words.
@@ -209,6 +217,38 @@ fn match_url(chars: &[char], start: usize) -> Option<(String, usize)> {
     spoken.push(' ');
     spoken.push_str(&trailing);
     Some((spoken, span.chars().count()))
+}
+
+/// Detect a dotted-quad IPv4 address (optionally `:port`) at the
+/// start of `span`. Returns the spoken form: octets separated by
+/// " dot " and the port introduced by " port ".
+fn match_ip_address(span: &str) -> Option<String> {
+    // Split off optional :port suffix
+    let (host, port) = match span.split_once(':') {
+        Some((h, p)) if p.chars().all(|c| c.is_ascii_digit()) && !p.is_empty() => (h, Some(p)),
+        _ => (span, None),
+    };
+    let parts: Vec<&str> = host.split('.').collect();
+    if parts.len() != 4 {
+        return None;
+    }
+    for p in &parts {
+        if p.is_empty() || p.len() > 3 {
+            return None;
+        }
+        if !p.chars().all(|c| c.is_ascii_digit()) {
+            return None;
+        }
+        if p.parse::<u8>().is_err() {
+            return None;
+        }
+    }
+    let mut out = parts.join(" dot ");
+    if let Some(p) = port {
+        out.push_str(" port ");
+        out.push_str(p);
+    }
+    Some(out)
 }
 
 fn matches_tld(lower: &str) -> bool {

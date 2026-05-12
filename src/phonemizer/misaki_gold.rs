@@ -60,6 +60,13 @@ const CURATED_OVERRIDES: &[(&str, &str)] = &[
     ("kung-fu", "kˌʌŋfˈu"),
     ("jiu-jitsu", "ʤˌuʤˈɪtsu"),
     ("aikido", "aɪkˈido"),
+    // Tech URLs where LTS otherwise mangles them
+    ("github", "ɡˈɪthˌʌb"),
+    ("readme", "ɹˈidmˌi"),
+    ("stackoverflow", "stˈækˌOvəɹflO"),
+    ("youtube", "jˈutˌub"),
+    ("reddit", "ɹˈɛdɪt"),
+    ("wikipedia", "wˌɪkipˈidiə"),
 ];
 
 fn flatten_value(value: &Value) -> Option<String> {
