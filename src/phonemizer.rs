@@ -328,6 +328,10 @@ fn try_inflectional_suffix(
         ("ers", "əɹz"),
         ("er", "əɹ"),
         ("ly", "li"),
+        // Plural "-ies" of stems ending in 'y' (weirdies, beardies,
+        // techies) — LTS over the whole word reads "ies" as /aɪs/
+        // ("weirdies" → /wɛˈɪɹdaɪs/). Prefer stem + /iz/.
+        ("ies", "iz"),
     ];
     let lower = word.to_ascii_lowercase();
     for &(suf, suf_ipa) in SUFFIXES {
@@ -530,6 +534,18 @@ fn try_gold_plural(word: &str, gold: &misaki_gold::MisakiGoldLexicon) -> Option<
         return None;
     }
     let lower = word.to_ascii_lowercase();
+    // English plural: "y → ies" (babies/cities/parties). Try this
+    // FIRST so we don't strip "es" and land on a nonsense gold stem
+    // like "babi". Only when the y-form is in gold.
+    if let Some(stem) = lower.strip_suffix("ies") {
+        if !stem.is_empty() {
+            let y_form = format!("{stem}y");
+            if let Some(base_ipa) = gold.lookup(&y_form) {
+                let suffix = possessive_phone_after(base_ipa);
+                return Some(format!("{base_ipa}{suffix}"));
+            }
+        }
+    }
     // Strip "s" first, then "es". Some words match both (e.g. "horses"
     // → "horse" via "s" strip), in which case the "s" strip wins —
     // that's what we want, since the singular is the one in gold.
