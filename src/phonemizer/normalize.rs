@@ -653,12 +653,24 @@ fn match_math_operator(chars: &[char], start: usize) -> Option<(String, usize)> 
                 None
             }
         }
+        '=' if matches!(chars.get(start + 1), Some('>')) => {
+            // "=>" — arrow / hash-rocket / VHDL element-association.
+            Some((" arrow ".to_string(), 2))
+        }
+        '=' if matches!(chars.get(start + 1), Some('=')) => {
+            // "==" comparison.
+            Some((" equals equals ".to_string(), 2))
+        }
         '=' => {
             if math_general_context(chars, start) {
                 Some((" equals ".to_string(), 1))
             } else {
                 None
             }
+        }
+        ':' if matches!(chars.get(start + 1), Some('=')) => {
+            // Pascal/Ada/VHDL/Go assignment ":=".
+            Some((" gets ".to_string(), 2))
         }
         '-' => {
             if math_digit_context(chars, start) || math_unary_minus_context(chars, start) {
