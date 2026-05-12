@@ -151,14 +151,27 @@ pub fn pre_phonemize_normalize(text: &str) -> String {
     // normalize_math's "-" handling can route them to " minus ".
     // Editorial square brackets ('[B]efore', '[citation]') aren't
     // spoken markup; strip them so the wrapped content reads naturally.
-    let dashed: String = text
-        .chars()
-        .filter_map(|c| match c {
-            '–' | '−' => Some('-'),
-            '[' | ']' => None,
-            _ => Some(c),
-        })
-        .collect();
+    // En-dash '–' between digits is a range ("299–320" → "299 to 320");
+    // elsewhere fold to ASCII '-' so normalize_math can route it to
+    // " minus " when in unary-minus context.
+    let chars: Vec<char> = text.chars().collect();
+    let mut dashed = String::with_capacity(text.len());
+    for (i, &c) in chars.iter().enumerate() {
+        match c {
+            '[' | ']' => continue,
+            '–' => {
+                let prev_digit = i > 0 && chars[i - 1].is_ascii_digit();
+                let next_digit = chars.get(i + 1).is_some_and(|c| c.is_ascii_digit());
+                if prev_digit && next_digit {
+                    dashed.push_str(" to ");
+                } else {
+                    dashed.push('-');
+                }
+            }
+            '−' => dashed.push('-'),
+            _ => dashed.push(c),
+        }
+    }
     let cards = normalize::normalize_card_suits(&dashed);
     let folded = normalize::fold_diacritics(&cards);
     let url_expanded = normalize::normalize_urls_with(&folded, |w| {
