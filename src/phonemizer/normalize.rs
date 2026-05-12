@@ -82,6 +82,105 @@ pub fn separate_digit_alpha_boundaries(text: &str) -> String {
     out
 }
 
+/// Expand standalone Roman numerals (II–MMMCMXCIX) to cardinals when
+/// the token isn't a real English word. "Chapter VII" → "Chapter
+/// seven", "page ix" → "page nine". Single-letter forms (I, V, X, L,
+/// C, D, M) are too ambiguous (pronouns, letters, words) and left
+/// alone — so are tokens whose lowercase appears in the dictionary
+/// (MIX, DID, LID, etc., which happen to be valid Roman strings).
+///
+/// Callers must pass an `is_real_word` predicate that consults
+/// gold + CMUdict; otherwise the function never converts.
+pub fn expand_roman_numerals<F: Fn(&str) -> bool>(text: &str, is_real_word: F) -> String {
+    let mut out = String::with_capacity(text.len());
+    let chars: Vec<char> = text.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if let Some((spoken, consumed)) = match_roman(&chars, i, &is_real_word) {
+            out.push_str(&spoken);
+            i += consumed;
+        } else {
+            out.push(chars[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
+fn match_roman<F: Fn(&str) -> bool>(
+    chars: &[char],
+    start: usize,
+    is_real_word: &F,
+) -> Option<(String, usize)> {
+    if start > 0 && chars[start - 1].is_ascii_alphanumeric() {
+        return None;
+    }
+    let mut end = start;
+    let mut all_upper = true;
+    let mut all_lower = true;
+    while end < chars.len() {
+        let ch = chars[end];
+        match ch {
+            'I' | 'V' | 'X' | 'L' | 'C' | 'D' | 'M' => {
+                all_lower = false;
+                end += 1;
+            }
+            'i' | 'v' | 'x' | 'l' | 'c' | 'd' | 'm' => {
+                all_upper = false;
+                end += 1;
+            }
+            _ => break,
+        }
+    }
+    let len = end - start;
+    if len < 2 {
+        return None;
+    }
+    // Mixed case (e.g. "Iv") — not a Roman numeral.
+    if !all_upper && !all_lower {
+        return None;
+    }
+    // Next char must not be alphanumeric (word boundary).
+    if matches!(chars.get(end), Some(c) if c.is_ascii_alphanumeric()) {
+        return None;
+    }
+    let token: String = chars[start..end].iter().collect();
+    let upper = token.to_ascii_uppercase();
+    let value = roman_to_int(&upper)?;
+    if value == 0 {
+        return None;
+    }
+    // Real English word? Skip — "MIX" (1009), "DID", "LID", "DIM" etc.
+    if is_real_word(&token.to_ascii_lowercase()) {
+        return None;
+    }
+    Some((cardinal_phrase(&value.to_string(), false), len))
+}
+
+fn roman_to_int(s: &str) -> Option<u32> {
+    let mut total: u32 = 0;
+    let mut prev: u32 = 0;
+    for ch in s.chars().rev() {
+        let v = match ch {
+            'I' => 1,
+            'V' => 5,
+            'X' => 10,
+            'L' => 50,
+            'C' => 100,
+            'D' => 500,
+            'M' => 1000,
+            _ => return None,
+        };
+        if v < prev {
+            total = total.checked_sub(v)?;
+        } else {
+            total = total.checked_add(v)?;
+        }
+        prev = v;
+    }
+    Some(total)
+}
+
 /// Expand playing-card suit symbols (♣ ♥ ♦ ♠) into spoken form so the
 /// tokenizer doesn't drop them as unknown Unicode. Also expand the
 /// single-letter card ranks ("A", "T", "J", "Q", "K") when they appear

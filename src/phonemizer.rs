@@ -184,7 +184,10 @@ pub fn pre_phonemize_normalize(text: &str) -> String {
         }
     }
     let cards = normalize::normalize_card_suits(&dashed);
-    let folded = normalize::fold_diacritics(&cards);
+    let romanized = normalize::expand_roman_numerals(&cards, |w| {
+        gold.lookup(w).is_some() || lexicon.lookup(w).is_some()
+    });
+    let folded = normalize::fold_diacritics(&romanized);
     let url_expanded = normalize::normalize_urls_with(&folded, |w| {
         gold.lookup(w).is_some() || lexicon.lookup(w).is_some()
     });
