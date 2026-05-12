@@ -249,7 +249,77 @@ fn phonemize_word(
         .or_else(|| try_possessive(word, ctx, gold, lexicon))
         .or_else(|| try_hyphenated(word, ctx, gold, lexicon))
         .or_else(|| try_british_digraph(word, gold, lexicon))
+        .or_else(|| try_compound_prefix(word, gold, lexicon))
         .unwrap_or_else(|| lts::pronounce_oov(word))
+}
+
+/// Last-resort: split OOV compound words at a known English prefix
+/// boundary if the remainder is in gold/CMUdict.
+/// "noncommutative" → non + commutative, "typename" → type + name,
+/// "semigroup" → semi + group. Avoids LTS misreads of unhyphenated
+/// technical compounds without hard-coding any specific word.
+fn try_compound_prefix(
+    word: &str,
+    gold: &misaki_gold::MisakiGoldLexicon,
+    lexicon: &lexicon::Lexicon,
+) -> Option<String> {
+    const PREFIXES: &[&str] = &[
+        "anti", "auto", "bi", "co", "de", "dis", "en", "ex", "extra",
+        "hyper", "inter", "intra", "macro", "micro", "mid", "mini", "mis",
+        "multi", "neo", "non", "over", "post", "pre", "pro", "proto", "pseudo",
+        "quasi", "re", "self", "semi", "sub", "super", "trans", "ultra",
+        "un", "under", "uni",
+    ];
+    let lower = word.to_ascii_lowercase();
+    for &pre in PREFIXES {
+        if lower.len() <= pre.len() + 2 {
+            continue;
+        }
+        if !lower.starts_with(pre) {
+            continue;
+        }
+        let rest = &lower[pre.len()..];
+        // Avoid splitting a real word that happens to start with a prefix-like
+        // string ("under" + "stand" should NOT fire if "understand" is already
+        // in gold — caller checks that). Require rest in gold or CMUdict.
+        let rest_ipa = gold
+            .lookup(rest)
+            .map(str::to_owned)
+            .or_else(|| lexicon.lookup(rest).map(arpabet::phones_to_ipa))?;
+        let pre_ipa = gold
+            .lookup(pre)
+            .map(str::to_owned)
+            .or_else(|| lexicon.lookup(pre).map(arpabet::phones_to_ipa))
+            .unwrap_or_else(|| lts::pronounce_oov(pre));
+        return Some(format!("{pre_ipa}{rest_ipa}"));
+    }
+    // Also try suffix split: split at common English noun-forming suffixes
+    // like "-name", "-group", "-work", "-set" when the prefix is in gold.
+    const SUFFIXES: &[&str] = &[
+        "name", "group", "work", "set", "house", "board", "list",
+        "mark", "point", "line", "case", "type", "side", "way",
+        "time", "back", "down", "out", "off", "field", "space",
+    ];
+    for &suf in SUFFIXES {
+        if lower.len() <= suf.len() + 2 {
+            continue;
+        }
+        if !lower.ends_with(suf) {
+            continue;
+        }
+        let head = &lower[..lower.len() - suf.len()];
+        let head_ipa = gold
+            .lookup(head)
+            .map(str::to_owned)
+            .or_else(|| lexicon.lookup(head).map(arpabet::phones_to_ipa))?;
+        let suf_ipa = gold
+            .lookup(suf)
+            .map(str::to_owned)
+            .or_else(|| lexicon.lookup(suf).map(arpabet::phones_to_ipa))
+            .unwrap_or_else(|| lts::pronounce_oov(suf));
+        return Some(format!("{head_ipa}{suf_ipa}"));
+    }
+    None
 }
 
 /// Last-resort fallback: collapse British "ae"/"oe" digraphs to "e" and
