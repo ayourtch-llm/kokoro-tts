@@ -243,7 +243,7 @@ fn match_url<F: Fn(&str) -> bool>(
             '#' => spoken.push_str(" hash "),
             '&' => spoken.push_str(" and "),
             '_' => spoken.push_str(" underscore "),
-            '-' => spoken.push('-'),
+            '-' => spoken.push_str(" dash "),
             other => spoken.push(other),
         }
     }
@@ -280,7 +280,9 @@ fn match_ip_address(span: &str) -> Option<String> {
     }
     let mut out = parts.join(" dot ");
     if let Some(p) = port {
-        out.push_str(" port ");
+        // Comma before "port" gives the model a beat of prosodic pause
+        // between the address and the port number.
+        out.push_str(", port ");
         out.push_str(p);
     }
     Some(out)
