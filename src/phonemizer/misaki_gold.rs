@@ -67,6 +67,9 @@ const CURATED_OVERRIDES: &[(&str, &str)] = &[
     ("youtube", "jˈutˌub"),
     ("reddit", "ɹˈɛdɪt"),
     ("wikipedia", "wˌɪkipˈidiə"),
+    // VHDL / programming keywords that LTS reads as nonsense words
+    ("downto", "dˈWn tˈu"),
+    ("ieee", "ˈI ˈi ˈi ˈi"),
 ];
 
 fn flatten_value(value: &Value) -> Option<String> {

@@ -283,6 +283,7 @@ fn phonemize_word(
         .or_else(|| try_compound_prefix(word, gold, lexicon))
         .or_else(|| try_inflectional_suffix(word, gold, lexicon))
         .or_else(|| try_camel_case(word, ctx, gold, lexicon))
+        .or_else(|| try_letter_spell_unpronounceable(word))
         .unwrap_or_else(|| lts::pronounce_oov(word))
 }
 
@@ -323,6 +324,39 @@ fn try_inflectional_suffix(
                 return Some(format!("{s}{suf_ipa}"));
             }
         }
+    }
+    None
+}
+
+/// Last-resort letter-spell for short OOV codes that LTS would render
+/// as a vowel-less cluster ("std" → /std/, "btn" → /btn/) or that
+/// happen to be common letter-spelled acronyms ("ieee" / "html" /
+/// "css" / "sql"). Heuristic: word is ≤5 ASCII letters AND either has
+/// no vowels at all, or it's lowercase but matches one of the common
+/// known initialisms. Returns letter-spelled IPA.
+fn try_letter_spell_unpronounceable(word: &str) -> Option<String> {
+    let lower = word.to_ascii_lowercase();
+    if !lower.chars().all(|c| c.is_ascii_lowercase()) {
+        return None;
+    }
+    if lower.len() < 2 || lower.len() > 5 {
+        return None;
+    }
+    let vowel_count = lower
+        .chars()
+        .filter(|c| matches!(c, 'a' | 'e' | 'i' | 'o' | 'u' | 'y'))
+        .count();
+    const KNOWN_INITIALISMS: &[&str] = &[
+        "ieee", "html", "css", "sql", "vhdl", "json", "xml", "yaml",
+        "http", "https", "ftp", "ssh", "url", "ui", "ux", "api",
+        "ci", "cd", "sdk", "ide", "ocr", "asr", "tts", "gui",
+        "cpu", "gpu", "ram", "rom", "ssd", "hdd", "usb",
+        "ai", "ml", "nlp", "ar", "vr", "iot",
+    ];
+    let known = KNOWN_INITIALISMS.contains(&lower.as_str());
+    let unpronounceable = vowel_count == 0;
+    if known || unpronounceable {
+        return Some(spell_out_word(word));
     }
     None
 }
