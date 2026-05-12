@@ -66,6 +66,15 @@ pub fn split_sentences(text: &str) -> Vec<String> {
 }
 
 fn match_abbreviation(text: &str, start: usize) -> Option<usize> {
+    // Require a word boundary before the abbreviation, otherwise
+    // "terms." matches "ms." and swallows the sentence break.
+    let at_word_boundary = match text[..start].chars().next_back() {
+        None => true,
+        Some(prev) => !prev.is_ascii_alphanumeric(),
+    };
+    if !at_word_boundary {
+        return None;
+    }
     let tail = text.get(start..)?;
     for abbrev in ABBREVIATIONS {
         if tail.len() >= abbrev.len()
@@ -120,6 +129,19 @@ mod tests {
         assert_eq!(
             split_sentences("Hello.\n\nWorld."),
             vec!["Hello.", "World."]
+        );
+    }
+
+    #[test]
+    fn does_not_match_abbreviation_inside_a_word() {
+        // "terms." should not match "ms." abbreviation — that bug let
+        // a 512-phoneme run-on chunk reach the model.
+        assert_eq!(
+            split_sentences("We laughed in hilarious terms. We struggled to communicate."),
+            vec![
+                "We laughed in hilarious terms.",
+                "We struggled to communicate.",
+            ]
         );
     }
 
