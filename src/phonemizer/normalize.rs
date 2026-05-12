@@ -1665,6 +1665,15 @@ fn match_money_prefix(chars: &[char], start: usize) -> Option<(String, usize)> {
         '¥' => ("yen", "yen"),
         _ => return None,
     };
+    // Shell-style env var "$PATH" / "$HOME" — speak "dollar" and let
+    // the identifier read normally.  Only fires when '$' is the sigil
+    // (preceded by non-alphanumeric) and the next char is alpha.
+    if symbol == '$'
+        && matches!(chars.get(start + 1), Some(c) if c.is_ascii_alphabetic())
+        && (start == 0 || !chars[start - 1].is_ascii_alphanumeric())
+    {
+        return Some((" dollar ".to_string(), 1));
+    }
     let (int_part, frac_part, consumed) = scan_currency_amount(chars, start + 1)?;
     let trimmed = int_part.trim_start_matches('0');
     let value = if trimmed.is_empty() { "0" } else { trimmed };
