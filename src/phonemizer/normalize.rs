@@ -82,6 +82,72 @@ pub fn separate_digit_alpha_boundaries(text: &str) -> String {
     out
 }
 
+/// Foot/inch convention: digit + ' or ’ → "X feet", digit + " or ”
+/// → "X inches". Common in cookery ("12' x 15' room") and biometrics
+/// ("6'2\""). Only fires when the mark immediately follows a digit
+/// and the next char isn't alphanumeric — leaves prose apostrophes
+/// (won't, she's) and quoted strings alone.
+pub fn expand_foot_inch_marks(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < chars.len() {
+        let ch = chars[i];
+        let prev_digit = i > 0 && chars[i - 1].is_ascii_digit();
+        if prev_digit {
+            if matches!(ch, '\'' | '\u{2019}') {
+                // foot mark
+                out.push_str(" feet ");
+                i += 1;
+                continue;
+            }
+            if matches!(ch, '"' | '\u{201D}') {
+                // inch mark
+                out.push_str(" inches ");
+                i += 1;
+                continue;
+            }
+        }
+        out.push(ch);
+        i += 1;
+    }
+    out
+}
+
+/// Expand "0x...." hex literals to spoken form: "hex" + each digit/
+/// letter pronounced individually. Catches typical kernel-panic /
+/// debugger / register dump addresses like "0xDEADBEEF" so they don't
+/// decompose into "zero xDEADBEEF" at the digit-alpha boundary.
+pub fn expand_hex_literals(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < chars.len() {
+        // Match "0x" or "0X" at word boundary.
+        if chars[i] == '0'
+            && matches!(chars.get(i + 1), Some('x' | 'X'))
+            && matches!(chars.get(i + 2), Some(c) if c.is_ascii_hexdigit())
+            && (i == 0 || !chars[i - 1].is_ascii_alphanumeric())
+        {
+            let mut j = i + 2;
+            while j < chars.len() && chars[j].is_ascii_hexdigit() {
+                j += 1;
+            }
+            out.push_str(" hex");
+            for c in &chars[i + 2..j] {
+                out.push(' ');
+                out.push(c.to_ascii_uppercase());
+            }
+            out.push(' ');
+            i = j;
+            continue;
+        }
+        out.push(chars[i]);
+        i += 1;
+    }
+    out
+}
+
 /// Expand standalone Roman numerals (II–MMMCMXCIX) to cardinals when
 /// the token isn't a real English word. "Chapter VII" → "Chapter
 /// seven", "page ix" → "page nine". Single-letter forms (I, V, X, L,
@@ -469,6 +535,7 @@ fn match_url<F: Fn(&str) -> bool>(
             '&' => spoken.push_str(" and "),
             '_' => spoken.push_str(" underscore "),
             '-' => spoken.push_str(" dash "),
+            '~' => spoken.push_str(" tilde "),
             other => spoken.push(other),
         }
     }
@@ -517,6 +584,11 @@ fn match_ip_address(span: &str) -> Option<String> {
 /// (so a sentence-final "/" doesn't trigger) or has the leading
 /// '/' followed by a recognizable path segment of alphanumerics.
 fn looks_like_unix_path(lower: &str) -> bool {
+    // Home-directory paths: "~/" + something.
+    if let Some(rest) = lower.strip_prefix("~/") {
+        return !rest.is_empty();
+    }
+    // Absolute paths: "/" + alphanumeric + (more "/" or length).
     if !lower.starts_with('/') {
         return false;
     }
@@ -916,7 +988,34 @@ fn math_slash_context(chars: &[char], start: usize) -> bool {
     if left_space || right_space {
         return true;
     }
-    digit_run_left(chars, start) > 1 || digit_run_right(chars, start + 1) > 1
+    if digit_run_left(chars, start) > 1 || digit_run_right(chars, start + 1) > 1 {
+        return true;
+    }
+    // Single-digit/single-digit "X/Y" surrounded by word boundary (not
+    // alphanumeric, not '/'). Catches recipe-style "3/4 cup" / "1/2
+    // teaspoon" / "5/8 wrench". Rules out paths like "a/b/c" (alpha
+    // around) and dates "1/2/2024" (more '/').
+    let outer_left = if start == 0 {
+        None
+    } else {
+        let mut j = start;
+        while j > 0 && chars[j - 1].is_ascii_digit() {
+            j -= 1;
+        }
+        chars.get(j.wrapping_sub(1)).copied()
+    };
+    let outer_right = {
+        let mut k = start + 1;
+        while k < chars.len() && chars[k].is_ascii_digit() {
+            k += 1;
+        }
+        chars.get(k).copied()
+    };
+    let outer_ok = |c: Option<char>| match c {
+        None => true,
+        Some(ch) => !ch.is_ascii_alphanumeric() && ch != '/',
+    };
+    outer_ok(outer_left) && outer_ok(outer_right)
 }
 
 fn prev_non_whitespace(chars: &[char], start: usize) -> Option<char> {
@@ -2302,6 +2401,10 @@ mod tests {
         assert_eq!(normalize_math("50%"), "50 percent");
         assert_eq!(normalize_math("text-to-speech"), "text-to-speech");
         assert_eq!(normalize_math("**bold**"), "**bold**");
-        assert_eq!(normalize_math("5/6"), "5/6");
+        // Single-digit/single-digit with word boundary: treated as
+        // fraction (was a no-op before the recipe-fraction fix).
+        assert_eq!(normalize_math("5/6"), "5 divided by 6");
+        // Paths with alpha boundaries shouldn't be touched.
+        assert_eq!(normalize_math("a/b/c"), "a/b/c");
     }
 }

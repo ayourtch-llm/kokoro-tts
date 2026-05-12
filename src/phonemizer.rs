@@ -184,7 +184,9 @@ pub fn pre_phonemize_normalize(text: &str) -> String {
         }
     }
     let cards = normalize::normalize_card_suits(&dashed);
-    let romanized = normalize::expand_roman_numerals(&cards, |w| {
+    let foot_inch = normalize::expand_foot_inch_marks(&cards);
+    let hex_expanded = normalize::expand_hex_literals(&foot_inch);
+    let romanized = normalize::expand_roman_numerals(&hex_expanded, |w| {
         gold.lookup(w).is_some() || lexicon.lookup(w).is_some()
     });
     let folded = normalize::fold_diacritics(&romanized);
