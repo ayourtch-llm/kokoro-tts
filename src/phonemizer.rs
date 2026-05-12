@@ -309,10 +309,13 @@ fn try_compound_prefix(
         // Avoid splitting a real word that happens to start with a prefix-like
         // string ("under" + "stand" should NOT fire if "understand" is already
         // in gold — caller checks that). Require rest in gold or CMUdict.
-        let rest_ipa = gold
+        let Some(rest_ipa) = gold
             .lookup(rest)
             .map(str::to_owned)
-            .or_else(|| lexicon.lookup(rest).map(arpabet::phones_to_ipa))?;
+            .or_else(|| lexicon.lookup(rest).map(arpabet::phones_to_ipa))
+        else {
+            continue;
+        };
         let pre_ipa = gold
             .lookup(pre)
             .map(str::to_owned)
@@ -335,10 +338,13 @@ fn try_compound_prefix(
             continue;
         }
         let head = &lower[..lower.len() - suf.len()];
-        let head_ipa = gold
+        let Some(head_ipa) = gold
             .lookup(head)
             .map(str::to_owned)
-            .or_else(|| lexicon.lookup(head).map(arpabet::phones_to_ipa))?;
+            .or_else(|| lexicon.lookup(head).map(arpabet::phones_to_ipa))
+        else {
+            continue;
+        };
         let suf_ipa = gold
             .lookup(suf)
             .map(str::to_owned)
