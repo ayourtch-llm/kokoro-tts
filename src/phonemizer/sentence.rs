@@ -63,17 +63,27 @@ pub fn split_sentences(text: &str) -> Vec<String> {
         i += ch_len;
 
         if matches!(ch, '.' | '!' | '?') && should_end_sentence(text, i - ch_len, ch) {
-            if !current.trim().is_empty() {
-                out.push(current.trim().to_string());
-            }
+            push_if_meaningful(&mut out, &current);
             current.clear();
         }
     }
 
-    if !current.trim().is_empty() {
-        out.push(current.trim().to_string());
-    }
+    push_if_meaningful(&mut out, &current);
     out
+}
+
+fn push_if_meaningful(out: &mut Vec<String>, current: &str) {
+    let trimmed = current.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+    // A "sentence" of just punctuation / quotes (e.g. a stray closing
+    // curly quote left over after the prior sentence ended at '?')
+    // produces no phonemes and fails synthesis. Drop it.
+    if !trimmed.chars().any(|c| c.is_alphanumeric()) {
+        return;
+    }
+    out.push(trimmed.to_string());
 }
 
 fn match_abbreviation(text: &str, start: usize) -> Option<usize> {
