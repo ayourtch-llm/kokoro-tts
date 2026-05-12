@@ -176,6 +176,10 @@ impl StreamingAudioOutput {
         self.handle.clone()
     }
 
+    pub fn output_sample_rate(&self) -> u32 {
+        self.handle.output_sample_rate
+    }
+
     pub fn enqueue_samples(&self, samples: &[f32], input_sample_rate: u32) -> Result<()> {
         self.handle.enqueue_samples(samples, input_sample_rate)
     }

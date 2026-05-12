@@ -197,7 +197,17 @@ fn synthesize(
     };
     let on_chunk: Option<kokoro_tts::synthesis::OnChunkFn> = streaming_audio.as_ref().map(|out| {
         let handle = out.handle();
+        // Throttle: synth runs ~3x realtime, so without backpressure
+        // the queue blows past the 30s backlog warning quickly. Wait
+        // for the buffer to drop below this threshold before sending
+        // the next chunk.
+        const MAX_BUFFERED_SECONDS: f64 = 8.0;
+        let output_rate = out.output_sample_rate() as f64;
+        let max_pending = (MAX_BUFFERED_SECONDS * output_rate) as usize;
         Box::new(move |samples: &[f32], _idx: usize, _total: usize| {
+            while handle.pending_samples() > max_pending {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
             if let Err(e) = handle.enqueue_samples(samples, 24_000) {
                 eprintln!("playback enqueue error: {e:#}");
             }
