@@ -273,8 +273,50 @@ fn phonemize_word(
         .or_else(|| try_hyphenated(word, ctx, gold, lexicon))
         .or_else(|| try_british_digraph(word, gold, lexicon))
         .or_else(|| try_compound_prefix(word, gold, lexicon))
+        .or_else(|| try_inflectional_suffix(word, gold, lexicon))
         .or_else(|| try_camel_case(word, ctx, gold, lexicon))
         .unwrap_or_else(|| lts::pronounce_oov(word))
+}
+
+/// Inflectional-suffix fallback for OOV verbs/nouns. Many words miss
+/// gold and CMUdict in their inflected form ("hamstering",
+/// "swansong'd", "factionalises") but the bare stem is in CMUdict.
+/// LTS over the whole word places stress poorly; here we keep the
+/// stem's authoritative pronunciation and append the suffix phones.
+/// Only inflectional suffixes that change a final morpheme without
+/// reassigning stress (-ing, -ly, -er, -ers, -ness) are listed —
+/// -ed has voiceless/voiced/epenthetic allomorph complications that
+/// try_gold_plural / possessive_phone_after handle for the *gold*
+/// path; here we deliberately stay narrow.
+fn try_inflectional_suffix(
+    word: &str,
+    gold: &misaki_gold::MisakiGoldLexicon,
+    lexicon: &lexicon::Lexicon,
+) -> Option<String> {
+    const SUFFIXES: &[(&str, &str)] = &[
+        ("ings", "ɪŋz"),
+        ("ing", "ɪŋ"),
+        ("ness", "nəs"),
+        ("ers", "əɹz"),
+        ("er", "əɹ"),
+        ("ly", "li"),
+    ];
+    let lower = word.to_ascii_lowercase();
+    for &(suf, suf_ipa) in SUFFIXES {
+        if let Some(stem) = lower.strip_suffix(suf) {
+            if stem.len() < 3 {
+                continue;
+            }
+            let stem_ipa = gold
+                .lookup(stem)
+                .map(str::to_owned)
+                .or_else(|| lexicon.lookup(stem).map(arpabet::phones_to_ipa));
+            if let Some(s) = stem_ipa {
+                return Some(format!("{s}{suf_ipa}"));
+            }
+        }
+    }
+    None
 }
 
 /// Split a camelCase identifier ("NonCommutativeAdditiveSemigroup") and
