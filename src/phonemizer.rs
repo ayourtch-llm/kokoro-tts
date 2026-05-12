@@ -40,7 +40,7 @@ mod homograph;
 mod lexicon;
 mod lts;
 mod misaki_gold;
-mod normalize;
+pub mod normalize;
 pub mod sentence;
 #[allow(unused_imports)]
 pub use normalize::normalize_abbreviations;

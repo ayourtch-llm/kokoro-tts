@@ -31,6 +31,11 @@ pub fn split_sentences(text: &str) -> Vec<String> {
                 }
                 current.clear();
                 i += ch_len;
+                // Count consecutive \n. Two \n in a row = one paragraph
+                // break (just a sentence boundary). Each additional \n
+                // beyond that emits an empty-string entry, which the
+                // synthesis loop renders as extra silence.
+                let mut extra_breaks: usize = 0;
                 while i < text.len() {
                     let Some(next_ch) = text[i..].chars().next() else {
                         break;
@@ -38,7 +43,13 @@ pub fn split_sentences(text: &str) -> Vec<String> {
                     if next_ch != '\n' {
                         break;
                     }
+                    extra_breaks += 1;
                     i += next_ch.len_utf8();
+                }
+                // first extra \n was consumed for the basic break, the rest
+                // become explicit pause markers
+                for _ in 1..extra_breaks {
+                    out.push(String::new());
                 }
                 continue;
             } else {

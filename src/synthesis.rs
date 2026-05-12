@@ -1,5 +1,6 @@
 use crate::model::Kokoro;
 use crate::phonemizer::Phonemizer;
+use crate::phonemizer::normalize::normalize_urls;
 use crate::phonemizer::sentence::split_sentences;
 use anyhow::{bail, Context, Result};
 use candle_core::{Device, Tensor};
@@ -85,19 +86,27 @@ pub fn synthesize_text_opts(
     opts: &SynthesisOptions,
     progress: Option<&ProgressFn>,
 ) -> Result<Vec<f32>> {
+    // URL-normalize before sentence splitting; otherwise the splitter
+    // cuts "example.com/path" at the dot.
+    let prepped = normalize_urls(text);
     let sentences: Vec<String> = if opts.split_sentences {
-        split_sentences(text)
+        split_sentences(&prepped)
     } else {
-        vec![text.to_string()]
+        vec![prepped]
     };
 
     enum Chunk {
         Skipped,
+        Pause, // an explicit empty-line break from the source text
         Processed(String, String), // (original_sentence, phonemes)
     }
 
     let mut chunks: Vec<Chunk> = Vec::with_capacity(sentences.len());
     for sentence in &sentences {
+        if sentence.trim().is_empty() {
+            chunks.push(Chunk::Pause);
+            continue;
+        }
         let p = phonemizer
             .phonemize(sentence)
             .with_context(|| format!("phonemizing sentence: {:?}", sentence))?;
@@ -109,17 +118,25 @@ pub fn synthesize_text_opts(
         }
     }
 
-    let processed: Vec<&Chunk> = chunks.iter().filter(|c| matches!(c, Chunk::Processed(..))).collect();
-    if processed.is_empty() {
+    let processed: Vec<&Chunk> = chunks
+        .iter()
+        .filter(|c| matches!(c, Chunk::Processed(..) | Chunk::Pause))
+        .collect();
+    if !processed.iter().any(|c| matches!(c, Chunk::Processed(..))) {
         bail!("phonemizer produced no chunks");
     }
 
-    let mut audio_chunks = Vec::new();
+    let mut audio_chunks: Vec<Vec<f32>> = Vec::new();
     let total = processed.len();
     let t0 = std::time::Instant::now();
     for idx in 0..total {
         let (sentence, phonemes) = match &processed[idx] {
             Chunk::Processed(s, p) => (s, p),
+            Chunk::Pause => {
+                // Inject an extra silence_padding_samples block.
+                audio_chunks.push(vec![0.0; opts.silence_padding_samples]);
+                continue;
+            }
             _ => unreachable!(),
         };
         let phoneme_count = phonemes.chars().count();
