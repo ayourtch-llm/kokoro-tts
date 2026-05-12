@@ -57,6 +57,14 @@ pub use normalize::normalize_money_time;
 #[allow(unused_imports)]
 pub use normalize::normalize_units;
 
+pub fn normalize_urls_for_test(s: &str) -> String {
+    normalize::normalize_urls(s)
+}
+
+pub fn pre_phonemize_for_test(s: &str) -> String {
+    pre_phonemize_normalize(s)
+}
+
 #[derive(Debug, Default, Clone, Copy)]
 pub struct TwoTierPhonemizer;
 
@@ -69,7 +77,10 @@ impl Phonemizer for TwoTierPhonemizer {
         let gold = misaki_gold::lexicon();
         let lexicon = lexicon::lexicon();
         let mut out = Vec::new();
-        for sentence in sentence::split_sentences(text) {
+        // URL-normalize before sentence splitting so the splitter doesn't
+        // cut a URL at its dots (e.g. "example.com/path").
+        let url_normalized = normalize::normalize_urls(text);
+        for sentence in sentence::split_sentences(&url_normalized) {
             let sentence_out = phonemize_chunk(&sentence, gold, lexicon);
             if !sentence_out.is_empty() {
                 out.push(sentence_out);
@@ -127,10 +138,11 @@ pub fn pre_phonemize_normalize(text: &str) -> String {
         false
     };
     let folded = normalize::fold_diacritics(text);
+    let url_expanded = normalize::normalize_urls(&folded);
     normalize_cardinals(&normalize::normalize_acronyms_with(
         &normalize::lowercase_emphasis_function_words(&normalize::normalize_units(
             &normalize::normalize_money_time(&normalize::normalize_math(
-                &normalize::normalize_dates(&normalize::normalize_abbreviations(&folded)),
+                &normalize::normalize_dates(&normalize::normalize_abbreviations(&url_expanded)),
             )),
         )),
         is_emphasis_word,

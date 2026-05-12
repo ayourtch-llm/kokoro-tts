@@ -96,6 +96,154 @@ pub fn fold_diacritics(text: &str) -> String {
     out
 }
 
+/// Expand URLs into a spoken form so the tokenizer doesn't drop the
+/// '.', '/', and ':' as non-alphabetic noise. Detects spans starting
+/// with `https?://`, `www.`, or ending in a common TLD; inside those
+/// spans, `.` → " dot ", `/` → " slash ", `:` → " colon ", `?` →
+/// " question mark ", `=` → " equals ", `#` → " hash ", `&` → " and ".
+/// Outside URL spans the text is untouched, so unrelated punctuation
+/// (a sentence-ending period, a math equals) keeps its existing
+/// handling downstream.
+pub fn normalize_urls(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let chars: Vec<char> = text.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if let Some((expanded, consumed)) = match_url(&chars, i) {
+            out.push_str(&expanded);
+            i += consumed;
+        } else {
+            out.push(chars[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
+fn match_url(chars: &[char], start: usize) -> Option<(String, usize)> {
+    // Only consider a URL match at a word boundary.
+    if start > 0 && chars[start - 1].is_ascii_alphanumeric() {
+        return None;
+    }
+    let scan_end = chars[start..]
+        .iter()
+        .position(|c| c.is_whitespace() || matches!(c, ',' | '"' | '\'' | '<' | '>' | '(' | ')' | '“' | '”' | '‘' | '’'))
+        .map_or(chars.len(), |off| start + off);
+    if scan_end <= start {
+        return None;
+    }
+    let span: String = chars[start..scan_end].iter().collect();
+    let lower = span.to_ascii_lowercase();
+    let looks_url = lower.starts_with("http://")
+        || lower.starts_with("https://")
+        || lower.starts_with("www.")
+        || matches_tld(&lower);
+    if !looks_url {
+        return None;
+    }
+    // Strip any trailing punctuation that's likely sentence boundary,
+    // not part of the URL.
+    let mut tail_strip = 0;
+    while tail_strip < span.len() {
+        let trailing = span.chars().rev().nth(tail_strip)?;
+        if matches!(trailing, '.' | ',' | ';' | ':' | '!' | '?') {
+            tail_strip += 1;
+        } else {
+            break;
+        }
+    }
+    let kept_len = span.chars().count() - tail_strip;
+    let url_part: String = span.chars().take(kept_len).collect();
+    if url_part.is_empty() {
+        return None;
+    }
+    let trailing: String = span.chars().skip(kept_len).collect();
+    let mut spoken = String::new();
+    spoken.push(' ');
+    // Spell out scheme prefixes letter-by-letter (CMUdict doesn't have
+    // "https" / "http" / "www" / "ftp" as words, so they'd otherwise
+    // come out as garbled LTS).
+    let mut cursor = 0;
+    let url_lower = url_part.to_ascii_lowercase();
+    for scheme in &["https", "http", "www", "ftp"] {
+        if url_lower[cursor..].starts_with(scheme) {
+            for c in scheme.chars() {
+                spoken.push(c.to_ascii_uppercase());
+                spoken.push(' ');
+            }
+            cursor += scheme.len();
+            break;
+        }
+    }
+    let mut prev_class: Option<u8> = None;
+    for ch in url_part[cursor..].chars() {
+        // Insert a space at letter↔digit boundaries so identifiers like
+        // "ch01" / "page42" don't lose their digits when tokenize drops
+        // non-alphabetic characters that haven't been turned into words.
+        let class = if ch.is_ascii_alphabetic() {
+            Some(1)
+        } else if ch.is_ascii_digit() {
+            Some(2)
+        } else {
+            None
+        };
+        if let (Some(p), Some(c)) = (prev_class, class) {
+            if p != c {
+                spoken.push(' ');
+            }
+        }
+        prev_class = class;
+        match ch {
+            '.' => spoken.push_str(" dot "),
+            '/' => spoken.push_str(" slash "),
+            ':' => spoken.push_str(" colon "),
+            '?' => spoken.push_str(" question mark "),
+            '=' => spoken.push_str(" equals "),
+            '#' => spoken.push_str(" hash "),
+            '&' => spoken.push_str(" and "),
+            '_' => spoken.push_str(" underscore "),
+            '-' => spoken.push('-'),
+            other => spoken.push(other),
+        }
+    }
+    spoken.push(' ');
+    spoken.push_str(&trailing);
+    Some((spoken, span.chars().count()))
+}
+
+fn matches_tld(lower: &str) -> bool {
+    const TLDS: &[&str] = &[
+        ".com", ".org", ".net", ".edu", ".gov", ".io", ".co", ".uk",
+        ".de", ".fr", ".jp", ".cn", ".ru", ".us", ".info", ".biz",
+        ".me", ".ai", ".app", ".dev", ".tv",
+    ];
+    // We require a dot in the middle (not first char) and one of the
+    // TLDs to appear before '/', '?', '#', or end. This rules out
+    // sentence-final ".com" attached to an English word that just
+    // happens to end in those letters.
+    for tld in TLDS {
+        if let Some(idx) = lower.find(tld) {
+            if idx == 0 {
+                continue;
+            }
+            // first char before tld must be alphanumeric
+            let prev = lower[..idx].chars().next_back();
+            if !prev.is_some_and(|c| c.is_ascii_alphanumeric() || c == '-') {
+                continue;
+            }
+            // char after tld (if any) must be '/', '?', '#', or end
+            let after_idx = idx + tld.len();
+            let next = lower[after_idx..].chars().next();
+            match next {
+                None => return true,
+                Some(c) if matches!(c, '/' | '?' | '#') => return true,
+                _ => continue,
+            }
+        }
+    }
+    false
+}
+
 /// Lowercase 2-letter all-caps function words ("TO", "ON", "IN", …)
 /// when adjacent to a 3+ letter all-caps token, so phrases like
 /// "COME TO PARIS ON IMPORTANT BUSINESS" don't get the 2-letter
