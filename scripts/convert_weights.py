@@ -54,7 +54,12 @@ def main():
     parser = argparse.ArgumentParser(description="Convert Kokoro weights to safetensors")
     parser.add_argument("--input", default="./models", help="Directory containing local .pth/.pt files")
     parser.add_argument("--output", default="./models", help="Output directory")
-    parser.add_argument("--voices", nargs="*", default=["af_heart.pt"], help="Voice .pt files under input/voices")
+    parser.add_argument(
+        "--voices",
+        nargs="*",
+        default=None,
+        help="Voice .pt files under input/voices (default: all *.pt in voices/)",
+    )
     args = parser.parse_args()
 
     input_dir = Path(args.input)
@@ -83,10 +88,15 @@ def main():
     else:
         print(f"Skipping {config_out} (already exists)")
 
-    # Download voice files
+    # Convert voice files
     voices_dir = out_dir / "voices"
     voices_dir.mkdir(exist_ok=True)
-    voice_files = args.voices
+    if args.voices is None:
+        # Default: every .pt in input/voices/
+        in_voices = input_dir / "voices"
+        voice_files = sorted(p.name for p in in_voices.glob("*.pt")) if in_voices.is_dir() else []
+    else:
+        voice_files = args.voices
 
     print(f"\nConverting {len(voice_files)} voice files...")
     for vf in voice_files:

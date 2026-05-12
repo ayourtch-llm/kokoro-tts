@@ -45,20 +45,61 @@ async fn main() -> Result<()> {
     let model_path = download_file(&repo, MODEL_FILE, &output_path).await?;
     println!("Downloaded {} -> {}", MODEL_FILE, model_path.display());
 
-    // Download default voice (af_heart)
-    let voice_path =
-        download_file(&repo, "voices/af_heart.pt", &output_path.join("voices")).await?;
-    println!("Downloaded af_heart voice -> {}", voice_path.display());
+    // Voices to fetch. Pulls the standard English-language set plus a
+    // few non-English starters; users can extend with --voices.
+    let voices: Vec<String> = {
+        let mut v: Vec<String> = args
+            .windows(2)
+            .filter_map(|w| (w[0] == "--voices").then(|| w[1].clone()))
+            .next()
+            .map(|s| s.split(',').map(|x| x.trim().to_string()).collect())
+            .unwrap_or_else(|| {
+                vec![
+                    // American female
+                    "af_heart", "af_alloy", "af_aoede", "af_bella", "af_jessica",
+                    "af_kore", "af_nicole", "af_nova", "af_river", "af_sarah", "af_sky",
+                    // American male
+                    "am_adam", "am_echo", "am_eric", "am_fenrir", "am_liam",
+                    "am_michael", "am_onyx", "am_puck", "am_santa",
+                    // British female
+                    "bf_alice", "bf_emma", "bf_isabella", "bf_lily",
+                    // British male
+                    "bm_daniel", "bm_fable", "bm_george", "bm_lewis",
+                ]
+                .into_iter()
+                .map(String::from)
+                .collect()
+            });
+        v.sort();
+        v.dedup();
+        v
+    };
+    println!("Fetching {} voice files...", voices.len());
+    let voices_dir = output_path.join("voices");
+    let mut fetched = 0;
+    for v in &voices {
+        let rel = format!("voices/{v}.pt");
+        match download_file(&repo, &rel, &voices_dir).await {
+            Ok(p) => {
+                fetched += 1;
+                println!("  {v}.pt -> {}", p.display());
+            }
+            Err(e) => eprintln!("  WARN failed {v}.pt: {e:#}"),
+        }
+    }
+    println!("Fetched {fetched}/{} voices.", voices.len());
 
     println!("\n=== Download complete ===");
-    println!("\nNext step: convert .pth to safetensors for Candle.");
-    println!("Run:");
-    println!("  pip install torch safetensors huggingface_hub");
+    println!("\nNext steps:");
+    println!("  1. Convert the main model .pth → safetensors (needs Python):");
+    println!("       pip install torch safetensors huggingface_hub");
     println!(
-        "  python scripts/convert_weights.py --repo {REPO_ID} --output {}",
+        "       python scripts/convert_weights.py --input {} --output {}",
+        output_path.display(),
         output_path.display()
     );
-    println!("\nOr if you don't have Python, convert manually with a Python environment.");
+    println!("       (this now converts every voice in {}/voices/ in one go.)",
+        output_path.display());
 
     Ok(())
 }
@@ -66,15 +107,22 @@ async fn main() -> Result<()> {
 async fn download_file(repo: &ApiRepo, filename: &str, local_dir: &Path) -> Result<PathBuf> {
     std::fs::create_dir_all(local_dir)?;
 
-    let dest = local_dir.join(filename);
+    // Strip any parent dir components from `filename` for the local destination
+    // (e.g. "voices/af_heart.pt" → "af_heart.pt").
+    let base_name = Path::new(filename)
+        .file_name()
+        .ok_or_else(|| anyhow::anyhow!("no file name in {filename}"))?;
+    let dest = local_dir.join(base_name);
     if dest.exists() {
-        println!("  (already exists, skipping) {filename}");
         return Ok(dest);
     }
 
-    println!("  Downloading {filename}...");
-    let path = repo
+    let cache_path = repo
         .get(filename)
         .context(format!("Failed to download {filename}"))?;
-    Ok(path)
+    // Copy from HF cache to the local models dir so users have a stable
+    // path to point --voice at and to feed the Python converter.
+    std::fs::copy(&cache_path, &dest)
+        .with_context(|| format!("copying {} → {}", cache_path.display(), dest.display()))?;
+    Ok(dest)
 }
