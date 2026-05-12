@@ -36,6 +36,66 @@ pub fn normalize_acronyms(text: &str) -> String {
     normalize_acronyms_with(text, |_| false)
 }
 
+/// Fold common Latin diacritics to their ASCII bases so the tokenizer
+/// (which treats only `is_ascii_alphabetic` chars as part of words)
+/// doesn't split "fiancée" into "fianc" + "e" or drop "naïve" → "nave".
+/// Targets English loanwords from French/German/Spanish — full Unicode
+/// normalization isn't needed for the corpus this serves.
+pub fn fold_diacritics(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for ch in text.chars() {
+        let folded = match ch {
+            'à' | 'á' | 'â' | 'ã' | 'ä' | 'å' | 'ā' | 'ă' | 'ą' => 'a',
+            'À' | 'Á' | 'Â' | 'Ã' | 'Ä' | 'Å' | 'Ā' | 'Ă' | 'Ą' => 'A',
+            'è' | 'é' | 'ê' | 'ë' | 'ē' | 'ĕ' | 'ė' | 'ę' | 'ě' => 'e',
+            'È' | 'É' | 'Ê' | 'Ë' | 'Ē' | 'Ĕ' | 'Ė' | 'Ę' | 'Ě' => 'E',
+            'ì' | 'í' | 'î' | 'ï' | 'ī' | 'ĭ' | 'į' => 'i',
+            'Ì' | 'Í' | 'Î' | 'Ï' | 'Ī' | 'Ĭ' | 'Į' => 'I',
+            'ò' | 'ó' | 'ô' | 'õ' | 'ö' | 'ø' | 'ō' | 'ŏ' | 'ő' => 'o',
+            'Ò' | 'Ó' | 'Ô' | 'Õ' | 'Ö' | 'Ø' | 'Ō' | 'Ŏ' | 'Ő' => 'O',
+            'ù' | 'ú' | 'û' | 'ü' | 'ū' | 'ŭ' | 'ů' | 'ű' | 'ų' => 'u',
+            'Ù' | 'Ú' | 'Û' | 'Ü' | 'Ū' | 'Ŭ' | 'Ů' | 'Ű' | 'Ų' => 'U',
+            'ñ' | 'ń' | 'ņ' | 'ň' => 'n',
+            'Ñ' | 'Ń' | 'Ņ' | 'Ň' => 'N',
+            'ç' | 'ć' | 'ĉ' | 'ċ' | 'č' => 'c',
+            'Ç' | 'Ć' | 'Ĉ' | 'Ċ' | 'Č' => 'C',
+            'ý' | 'ÿ' | 'ŷ' => 'y',
+            'Ý' | 'Ÿ' | 'Ŷ' => 'Y',
+            'ś' | 'ŝ' | 'ş' | 'š' => 's',
+            'Ś' | 'Ŝ' | 'Ş' | 'Š' => 'S',
+            'ź' | 'ż' | 'ž' => 'z',
+            'Ź' | 'Ż' | 'Ž' => 'Z',
+            'ĺ' | 'ļ' | 'ľ' | 'ł' => 'l',
+            'Ĺ' | 'Ļ' | 'Ľ' | 'Ł' => 'L',
+            'ŕ' | 'ŗ' | 'ř' => 'r',
+            'Ŕ' | 'Ŗ' | 'Ř' => 'R',
+            'ť' | 'ţ' => 't',
+            'Ť' | 'Ţ' => 'T',
+            'ď' | 'đ' => 'd',
+            'Ď' | 'Đ' => 'D',
+            'ğ' | 'ĝ' | 'ġ' | 'ģ' => 'g',
+            'Ğ' | 'Ĝ' | 'Ġ' | 'Ģ' => 'G',
+            'ĥ' | 'ħ' => 'h',
+            'Ĥ' | 'Ħ' => 'H',
+            'ĵ' => 'j',
+            'Ĵ' => 'J',
+            'ķ' => 'k',
+            'Ķ' => 'K',
+            'œ' => 'o', // Treat ligature as o; "oeuvre" → "ouvre" close enough.
+            'Œ' => 'O',
+            'æ' => 'a',
+            'Æ' => 'A',
+            'ß' => 's', // German eszett — drop to single s; not perfect but tokenizable.
+            other => {
+                out.push(other);
+                continue;
+            }
+        };
+        out.push(folded);
+    }
+    out
+}
+
 /// Lowercase 2-letter all-caps function words ("TO", "ON", "IN", …)
 /// when adjacent to a 3+ letter all-caps token, so phrases like
 /// "COME TO PARIS ON IMPORTANT BUSINESS" don't get the 2-letter
