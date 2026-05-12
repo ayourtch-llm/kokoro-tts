@@ -125,11 +125,13 @@ pub fn synthesize_text_opts(
         let phoneme_count = phonemes.chars().count();
         if phoneme_count > opts.max_sentence_phonemes {
             bail!(
-                "sentence {} is too long at {} phonemes (max {});
-                 insert punctuation to split it or increase --max-phonemes",
+                "sentence {} is too long at {} phonemes (max {}); \
+                 insert punctuation to split it or increase --max-phonemes.\n  \
+                 sentence: {:?}",
                 idx + 1,
                 phoneme_count,
                 opts.max_sentence_phonemes,
+                sentence,
             );
         }
 
@@ -146,9 +148,14 @@ pub fn synthesize_text_opts(
         }
 
         let chunk_start = std::time::Instant::now();
-        let audio = model
-            .forward(phonemes, &ref_s, speed)
-            .with_context(|| format!("forward for chunk {}", idx + 1))?;
+        let audio = model.forward(phonemes, &ref_s, speed).with_context(|| {
+            format!(
+                "forward for chunk {} ({} phonemes)\n  sentence: {:?}",
+                idx + 1,
+                phoneme_count,
+                sentence,
+            )
+        })?;
         let samples = audio
             .to_dtype(candle_core::DType::F32)?
             .flatten_all()?
