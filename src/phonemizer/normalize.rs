@@ -36,6 +36,42 @@ pub fn normalize_acronyms(text: &str) -> String {
     normalize_acronyms_with(text, |_| false)
 }
 
+/// Insert a space at digit↔alpha boundaries so identifiers like
+/// "11.5bb" / "8GB" / "v2alpha" let downstream normalize_cardinals
+/// expand the numeric part and the alpha part get phonemized
+/// separately. Ordinal suffixes (st/nd/rd/th) are preserved so
+/// "2nd" / "21st" / "100th" stay intact for ordinal expansion.
+pub fn separate_digit_alpha_boundaries(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len() + 4);
+    let mut i = 0;
+    while i < chars.len() {
+        let ch = chars[i];
+        out.push(ch);
+        if ch.is_ascii_digit()
+            && i + 1 < chars.len()
+            && chars[i + 1].is_ascii_alphabetic()
+        {
+            // Preserve ordinal pairs: digit + (st|nd|rd|th).
+            let suf: String = chars[i + 1..].iter().take(2).collect();
+            let suf_lower = suf.to_ascii_lowercase();
+            let after = chars.get(i + 3).copied().unwrap_or(' ');
+            let is_ordinal = matches!(suf_lower.as_str(), "st" | "nd" | "rd" | "th")
+                && !after.is_ascii_alphabetic();
+            if !is_ordinal {
+                out.push(' ');
+            }
+        } else if ch.is_ascii_alphabetic()
+            && i + 1 < chars.len()
+            && chars[i + 1].is_ascii_digit()
+        {
+            out.push(' ');
+        }
+        i += 1;
+    }
+    out
+}
+
 /// Expand playing-card suit symbols (♣ ♥ ♦ ♠) into spoken form so the
 /// tokenizer doesn't drop them as unknown Unicode. Also expand the
 /// single-letter card ranks ("A", "T", "J", "Q", "K") when they appear
@@ -615,7 +651,7 @@ fn match_math_operator(chars: &[char], start: usize) -> Option<(String, usize)> 
             }
         }
         '-' => {
-            if math_digit_context(chars, start) {
+            if math_digit_context(chars, start) || math_unary_minus_context(chars, start) {
                 Some((" minus ".to_string(), 1))
             } else {
                 None
@@ -685,6 +721,25 @@ fn math_relational_context(chars: &[char], start: usize, consumed: usize) -> boo
         ),
         (Some(left), Some(right)) if is_math_operand_char(left) && is_math_operand_char(right)
     )
+}
+
+/// Unary minus: a '-' preceded by whitespace (or start of input) AND
+/// followed immediately by an alphanumeric. Catches "-EV" / "-3" /
+/// "-equity" in poker/math text without firing on hyphenated words
+/// like "well-known" (no whitespace before the '-').
+fn math_unary_minus_context(chars: &[char], start: usize) -> bool {
+    let prev = if start == 0 {
+        None
+    } else {
+        Some(chars[start - 1])
+    };
+    let prev_ok = match prev {
+        None => true,
+        Some(c) => c.is_whitespace() || matches!(c, '(' | '[' | '{' | '=' | ',' | ':'),
+    };
+    let next = chars.get(start + 1).copied();
+    let next_ok = matches!(next, Some(c) if c.is_ascii_alphanumeric());
+    prev_ok && next_ok
 }
 
 fn math_digit_context(chars: &[char], start: usize) -> bool {

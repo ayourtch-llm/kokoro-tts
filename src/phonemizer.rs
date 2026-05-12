@@ -146,16 +146,23 @@ pub fn pre_phonemize_normalize(text: &str) -> String {
         }
         false
     };
-    let cards = normalize::normalize_card_suits(text);
+    // En-dash and minus sign frequently appear in math/poker contexts
+    // as the unary "negative" marker; fold them to ASCII hyphen so
+    // normalize_math's "-" handling can route them to " minus ".
+    let dashed: String = text
+        .chars()
+        .map(|c| if matches!(c, '–' | '−') { '-' } else { c })
+        .collect();
+    let cards = normalize::normalize_card_suits(&dashed);
     let folded = normalize::fold_diacritics(&cards);
     let url_expanded = normalize::normalize_urls_with(&folded, |w| {
         gold.lookup(w).is_some() || lexicon.lookup(w).is_some()
     });
     normalize_cardinals(&normalize::normalize_acronyms_with(
-        &normalize::lowercase_emphasis_function_words(&normalize::normalize_units(
-            &normalize::normalize_money_time(&normalize::normalize_math(
+        &normalize::lowercase_emphasis_function_words(&normalize::separate_digit_alpha_boundaries(
+            &normalize::normalize_units(&normalize::normalize_money_time(&normalize::normalize_math(
                 &normalize::normalize_dates(&normalize::normalize_abbreviations(&url_expanded)),
-            )),
+            ))),
         )),
         is_emphasis_word,
     ))
