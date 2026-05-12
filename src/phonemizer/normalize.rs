@@ -82,6 +82,99 @@ pub fn separate_digit_alpha_boundaries(text: &str) -> String {
     out
 }
 
+/// Fold Unicode super- and sub-script digits to plain ASCII digits so
+/// "a² + b² = c²" reads as "a 2 + b 2 = c 2" (which the cardinal /
+/// digit-alpha-boundary handlers then turn into spoken numbers).
+/// Latin/Greek superscript LETTERS (e.g. "M ∈ ℝⁿ") are out of scope
+/// here; this is for the common numeric exponents.
+pub fn fold_super_sub_digits(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for ch in text.chars() {
+        let mapped = match ch {
+            '⁰' | '₀' => Some('0'),
+            '¹' | '₁' => Some('1'),
+            '²' | '₂' => Some('2'),
+            '³' | '₃' => Some('3'),
+            '⁴' | '₄' => Some('4'),
+            '⁵' | '₅' => Some('5'),
+            '⁶' | '₆' => Some('6'),
+            '⁷' | '₇' => Some('7'),
+            '⁸' | '₈' => Some('8'),
+            '⁹' | '₉' => Some('9'),
+            _ => None,
+        };
+        if let Some(d) = mapped {
+            out.push(' ');
+            out.push(d);
+            out.push(' ');
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
+/// Expand standalone Greek letters to their English names so they
+/// don't silently drop at tokenize. "λ-calculus" → "lambda calculus",
+/// "α, β, γ" → "alpha, beta, gamma". Both upper- and lowercase forms
+/// are mapped to the spoken word (the lowercase/uppercase distinction
+/// rarely matters for prose; users wanting "capital lambda" can override
+/// via custom vocab).
+pub fn expand_greek_letters(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len() + text.len() / 8);
+    for (i, &ch) in chars.iter().enumerate() {
+        if let Some(name) = greek_letter_name(ch) {
+            let prev = if i == 0 { None } else { Some(chars[i - 1]) };
+            let next = chars.get(i + 1).copied();
+            // Pad with spaces unless adjacent to '-' (hyphenated
+            // compound — "λ-calculus" should read as "lambda-calculus"
+            // not "lambda - calculus" which my unary-minus rule would
+            // then convert to "lambda minus calculus").
+            if !matches!(prev, Some('-')) {
+                out.push(' ');
+            }
+            out.push_str(name);
+            if !matches!(next, Some('-')) {
+                out.push(' ');
+            }
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
+fn greek_letter_name(ch: char) -> Option<&'static str> {
+    Some(match ch {
+        'α' | 'Α' => "alpha",
+        'β' | 'Β' => "beta",
+        'γ' | 'Γ' => "gamma",
+        'δ' | 'Δ' => "delta",
+        'ε' | 'ϵ' | 'Ε' => "epsilon",
+        'ζ' | 'Ζ' => "zeta",
+        'η' | 'Η' => "eta",
+        'θ' | 'ϑ' | 'Θ' => "theta",
+        'ι' | 'Ι' => "iota",
+        'κ' | 'Κ' => "kappa",
+        'λ' | 'Λ' => "lambda",
+        'μ' | 'Μ' => "mu",
+        'ν' | 'Ν' => "nu",
+        'ξ' | 'Ξ' => "xi",
+        // omicron 'ο' and 'Ο' are visually identical to Latin o/O, skip
+        'π' | 'Π' => "pi",
+        'ρ' | 'Ρ' => "rho",
+        'σ' | 'ς' | 'Σ' => "sigma",
+        'τ' | 'Τ' => "tau",
+        'υ' | 'Υ' => "upsilon",
+        'φ' | 'ϕ' | 'Φ' => "phi",
+        'χ' | 'Χ' => "chi",
+        'ψ' | 'Ψ' => "psi",
+        'ω' | 'Ω' => "omega",
+        _ => return None,
+    })
+}
+
 /// Foot/inch convention: digit + ' or ’ → "X feet", digit + " or ”
 /// → "X inches". Common in cookery ("12' x 15' room") and biometrics
 /// ("6'2\""). Only fires when the mark immediately follows a digit

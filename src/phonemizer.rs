@@ -183,7 +183,9 @@ pub fn pre_phonemize_normalize(text: &str) -> String {
             _ => dashed.push(c),
         }
     }
-    let cards = normalize::normalize_card_suits(&dashed);
+    let greek = normalize::expand_greek_letters(&dashed);
+    let supersub = normalize::fold_super_sub_digits(&greek);
+    let cards = normalize::normalize_card_suits(&supersub);
     let foot_inch = normalize::expand_foot_inch_marks(&cards);
     let hex_expanded = normalize::expand_hex_literals(&foot_inch);
     let romanized = normalize::expand_roman_numerals(&hex_expanded, |w| {
