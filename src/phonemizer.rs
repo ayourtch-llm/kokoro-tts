@@ -248,7 +248,44 @@ fn phonemize_word(
         .or_else(|| lexicon.lookup(&word).map(arpabet::phones_to_ipa))
         .or_else(|| try_possessive(word, ctx, gold, lexicon))
         .or_else(|| try_hyphenated(word, ctx, gold, lexicon))
+        .or_else(|| try_british_digraph(word, gold, lexicon))
         .unwrap_or_else(|| lts::pronounce_oov(word))
+}
+
+/// Last-resort fallback: collapse British "ae"/"oe" digraphs to "e" and
+/// re-look-up. Catches Latin/Greek scientific terms like
+/// "palaeolithic" → "paleolithic", "haemoglobin" → "hemoglobin",
+/// "foetus" → "fetus", "oestrogen" → "estrogen" — words that LTS
+/// otherwise reads literally as /pælæɛ.../ etc. Only fires after every
+/// other lookup misses, so words that genuinely have an "ae"/"oe"
+/// sequence with a distinct pronunciation (when they're in
+/// gold/CMUdict) are untouched.
+fn try_british_digraph(
+    word: &str,
+    gold: &misaki_gold::MisakiGoldLexicon,
+    lexicon: &lexicon::Lexicon,
+) -> Option<String> {
+    let lower = word.to_ascii_lowercase();
+    if !lower.contains("ae") && !lower.contains("oe") {
+        return None;
+    }
+    let candidates = [
+        lower.replace("ae", "e"),
+        lower.replace("oe", "e"),
+        lower.replace("ae", "e").replace("oe", "e"),
+    ];
+    for cand in &candidates {
+        if cand == &lower {
+            continue;
+        }
+        if let Some(ipa) = gold.lookup(cand) {
+            return Some(ipa.to_owned());
+        }
+        if let Some(ipa) = lexicon.lookup(cand).map(arpabet::phones_to_ipa) {
+            return Some(ipa);
+        }
+    }
+    None
 }
 
 /// Derive a regular plural pronunciation from the gold singular when gold
