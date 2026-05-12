@@ -513,7 +513,7 @@ fn split_possessive(word: &str) -> Option<(&str, bool)> {
         .map(|base| (base, true))
 }
 
-fn split_camel_case(word: &str) -> Option<Vec<String>> {
+pub fn split_camel_case(word: &str) -> Option<Vec<String>> {
     let mut parts = Vec::new();
     let mut current = String::new();
     let mut chars = word.chars().peekable();

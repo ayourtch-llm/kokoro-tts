@@ -250,7 +250,32 @@ fn phonemize_word(
         .or_else(|| try_hyphenated(word, ctx, gold, lexicon))
         .or_else(|| try_british_digraph(word, gold, lexicon))
         .or_else(|| try_compound_prefix(word, gold, lexicon))
+        .or_else(|| try_camel_case(word, ctx, gold, lexicon))
         .unwrap_or_else(|| lts::pronounce_oov(word))
+}
+
+/// Split a camelCase identifier ("NonCommutativeAdditiveSemigroup") and
+/// phonemize each part through the full lookup chain so individual
+/// words land their CMUdict entries instead of stretching LTS over the
+/// whole compound. Common in technical prose.
+fn try_camel_case(
+    word: &str,
+    ctx: &homograph::WordContext<'_>,
+    gold: &misaki_gold::MisakiGoldLexicon,
+    lexicon: &lexicon::Lexicon,
+) -> Option<String> {
+    let parts = lts::split_camel_case(word)?;
+    if parts.len() < 2 {
+        return None;
+    }
+    let mut out = String::new();
+    for (idx, part) in parts.iter().enumerate() {
+        if idx > 0 {
+            out.push(' ');
+        }
+        out.push_str(&phonemize_word(part, ctx, gold, lexicon));
+    }
+    Some(out)
 }
 
 /// Last-resort: split OOV compound words at a known English prefix
