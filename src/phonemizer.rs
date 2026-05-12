@@ -289,11 +289,13 @@ fn try_compound_prefix(
     lexicon: &lexicon::Lexicon,
 ) -> Option<String> {
     const PREFIXES: &[&str] = &[
-        "anti", "auto", "bi", "co", "de", "dis", "en", "ex", "extra",
-        "hyper", "inter", "intra", "macro", "micro", "mid", "mini", "mis",
-        "multi", "neo", "non", "over", "post", "pre", "pro", "proto", "pseudo",
-        "quasi", "re", "self", "semi", "sub", "super", "trans", "ultra",
-        "un", "under", "uni",
+        "anti", "astro", "auto", "bi", "bio", "co", "cyber", "de", "dis",
+        "eco", "electro", "en", "ex", "extra", "geo", "hydro", "hyper",
+        "inter", "intra", "macro", "mega", "micro", "mid", "mini", "mis",
+        "mono", "multi", "nano", "neo", "neuro", "non", "ortho", "over",
+        "photo", "poly", "post", "pre", "pro", "proto", "pseudo", "psycho",
+        "quasi", "re", "retro", "self", "semi", "socio", "sub", "super",
+        "tele", "thermo", "trans", "ultra", "un", "under", "uni",
     ];
     let lower = word.to_ascii_lowercase();
     for &pre in PREFIXES {
