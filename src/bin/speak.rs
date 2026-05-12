@@ -2,13 +2,13 @@
 
 use anyhow::{bail, Context, Result};
 use candle_core::{DType, Device};
-use kokoro_tts::audio::play_samples;
+use kokoro_tts::audio::{play_samples, StreamingAudioOutput};
 use kokoro_tts::default_device;
 use kokoro_tts::model::Kokoro;
 use kokoro_tts::phonemizer::{TwoTierPhonemizer, MILESTONE_TEST_PHONEMES};
 use kokoro_tts::synthesis::resolve_resource_path;
 use kokoro_tts::synthesis::{
-    samples_to_tensor, soft_normalize, synthesize_phonemes, synthesize_text_opts, write_wav,
+    samples_to_tensor, soft_normalize, synthesize_phonemes, write_wav,
     ProgressFn, SynthesisOptions, MAX_SENTENCE_PHONEMES, SILENCE_PADDING_SAMPLES,
 };
 use std::fs;
@@ -157,9 +157,9 @@ fn main() -> Result<()> {
         duration_s / dt.as_secs_f64()
     );
 
-    if args.play {
-        play_samples(&samples, 24_000).context("playback")?;
-    }
+    // Streaming playback already happened inside synthesize() per
+    // chunk; no need to re-play the full buffer here.
+    let _ = play_samples; // keep the import alive for potential future use
     write_wav(&samples, &args.out)?;
     println!("wrote {}", args.out.display());
     if scale < 1.0 {
@@ -187,6 +187,22 @@ fn synthesize(
             .unwrap_or(SILENCE_PADDING_SAMPLES),
         max_sentence_phonemes: args.max_phonemes.unwrap_or(MAX_SENTENCE_PHONEMES),
     };
+    // If --play, open the audio device up front and enqueue each chunk
+    // as it finishes synthesizing — so playback starts after chunk 1
+    // rather than after the whole file is rendered.
+    let streaming_audio = if args.play {
+        Some(StreamingAudioOutput::open().context("opening audio output")?)
+    } else {
+        None
+    };
+    let on_chunk: Option<kokoro_tts::synthesis::OnChunkFn> = streaming_audio.as_ref().map(|out| {
+        let handle = out.handle();
+        Box::new(move |samples: &[f32], _idx: usize, _total: usize| {
+            if let Err(e) = handle.enqueue_samples(samples, 24_000) {
+                eprintln!("playback enqueue error: {e:#}");
+            }
+        }) as kokoro_tts::synthesis::OnChunkFn
+    });
     let progress: ProgressFn = {
         let verbose = args.verbose;
         Box::new(
@@ -217,7 +233,7 @@ fn synthesize(
     };
     let samples = match (&args.phonemes, &args.text) {
         (Some(p), _) => synthesize_phonemes(model, p, voice, args.speed, device)?,
-        (None, Some(t)) => synthesize_text_opts(
+        (None, Some(t)) => kokoro_tts::synthesis::synthesize_text_opts_streaming(
             model,
             &phonemizer,
             t,
@@ -227,11 +243,19 @@ fn synthesize(
             args.verbose,
             &opts,
             Some(&progress),
+            on_chunk.as_ref(),
         )?,
         (None, None) => {
             synthesize_phonemes(model, MILESTONE_TEST_PHONEMES, voice, args.speed, device)?
         }
     };
+    // If we were streaming audio, wait for the queue to drain before
+    // dropping the output device — otherwise the last few chunks get
+    // cut off when speak exits.
+    if let Some(out) = streaming_audio {
+        out.handle().wait_until_drained();
+        drop(out);
+    }
     samples_to_tensor(samples, device)
 }
 

@@ -292,6 +292,22 @@ impl StreamingAudioHandle {
         Ok(())
     }
 
+    /// Number of samples (at the device's output sample rate) still
+    /// waiting to be played. Useful for "wait until the queue drains
+    /// then exit" patterns at the end of a streaming run.
+    pub fn pending_samples(&self) -> usize {
+        let guard = self.state.lock().expect("streaming mutex poisoned");
+        guard.samples.len()
+    }
+
+    /// Block (with small polling sleeps) until pending_samples() reaches
+    /// zero. Intended to be called once at the end of a streaming session.
+    pub fn wait_until_drained(&self) {
+        while self.pending_samples() > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+
     fn warn_if_backlogged(&self, queued_seconds: f64) {
         if queued_seconds >= STREAM_BACKLOG_WARN_SECONDS {
             tracing::warn!(

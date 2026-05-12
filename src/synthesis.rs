@@ -15,6 +15,11 @@ pub const MAX_SENTENCE_PHONEMES: usize = 510;
 /// Progress callback: (original_sentence, chunk_index_1based, total_chunks, elapsed)
 pub type ProgressFn = Box<dyn Fn(&str, usize, usize, Duration) + Send>;
 
+/// Per-chunk audio callback: (samples, chunk_index_1based, total_chunks).
+/// Use to start playback (or any downstream consumer) before the full
+/// synthesis is done — lets callers stream chunk-by-chunk.
+pub type OnChunkFn = Box<dyn Fn(&[f32], usize, usize) + Send>;
+
 pub struct SynthesisOptions {
     pub silence_padding_samples: usize,
     pub max_sentence_phonemes: usize,
@@ -87,6 +92,23 @@ pub fn synthesize_text_opts(
     opts: &SynthesisOptions,
     progress: Option<&ProgressFn>,
 ) -> Result<Vec<f32>> {
+    synthesize_text_opts_streaming(
+        model, phonemizer, text, voice, speed, device, verbose, opts, progress, None,
+    )
+}
+
+pub fn synthesize_text_opts_streaming(
+    model: &Kokoro,
+    phonemizer: &impl Phonemizer,
+    text: &str,
+    voice: &Path,
+    speed: f64,
+    device: &Device,
+    verbose: bool,
+    opts: &SynthesisOptions,
+    progress: Option<&ProgressFn>,
+    on_chunk: Option<&OnChunkFn>,
+) -> Result<Vec<f32>> {
     // URL-normalize before sentence splitting; otherwise the splitter
     // cuts "example.com/path" at the dot.
     let gold = misaki_gold::lexicon();
@@ -138,8 +160,11 @@ pub fn synthesize_text_opts(
         let (sentence, phonemes) = match &processed[idx] {
             Chunk::Processed(s, p) => (s, p),
             Chunk::Pause => {
-                // Inject an extra silence_padding_samples block.
-                audio_chunks.push(vec![0.0; opts.silence_padding_samples]);
+                let silence = vec![0.0f32; opts.silence_padding_samples];
+                if let Some(cb) = on_chunk {
+                    cb(&silence, idx + 1, total);
+                }
+                audio_chunks.push(silence);
                 continue;
             }
             _ => unreachable!(),
@@ -194,6 +219,13 @@ pub fn synthesize_text_opts(
                 elapsed.as_secs_f64(),
                 chunk_duration_s / elapsed.as_secs_f64()
             );
+        }
+        if let Some(cb) = on_chunk {
+            cb(&samples, idx + 1, total);
+            if idx + 1 < total && opts.silence_padding_samples > 0 {
+                let pad = vec![0.0f32; opts.silence_padding_samples];
+                cb(&pad, idx + 1, total);
+            }
         }
         audio_chunks.push(samples);
 
