@@ -146,7 +146,8 @@ pub fn pre_phonemize_normalize(text: &str) -> String {
         }
         false
     };
-    let folded = normalize::fold_diacritics(text);
+    let cards = normalize::normalize_card_suits(text);
+    let folded = normalize::fold_diacritics(&cards);
     let url_expanded = normalize::normalize_urls_with(&folded, |w| {
         gold.lookup(w).is_some() || lexicon.lookup(w).is_some()
     });

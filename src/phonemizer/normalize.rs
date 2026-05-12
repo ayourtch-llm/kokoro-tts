@@ -36,6 +36,79 @@ pub fn normalize_acronyms(text: &str) -> String {
     normalize_acronyms_with(text, |_| false)
 }
 
+/// Expand playing-card suit symbols (♣ ♥ ♦ ♠) into spoken form so the
+/// tokenizer doesn't drop them as unknown Unicode. Also expand the
+/// single-letter card ranks ("A", "T", "J", "Q", "K") when they appear
+/// immediately before a suit — in that context they're unambiguously
+/// face values, not articles or initialisms.
+pub fn normalize_card_suits(text: &str) -> String {
+    // First, expand letter-rank-before-suit and digit-rank-before-suit.
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len() + text.len() / 4);
+    let mut i = 0;
+    while i < chars.len() {
+        let ch = chars[i];
+        // Look ahead for a rank+suit pair.
+        if i + 1 < chars.len() && is_suit(chars[i + 1]) {
+            if let Some(rank_word) = card_rank_word(ch) {
+                out.push(' ');
+                out.push_str(rank_word);
+                out.push(' ');
+                out.push_str(suit_phrase(chars[i + 1]));
+                i += 2;
+                continue;
+            }
+        }
+        // Standalone suit (e.g. "♥-themed").
+        if is_suit(ch) {
+            out.push(' ');
+            out.push_str(suit_phrase(ch).trim_start_matches("of "));
+            out.push(' ');
+            i += 1;
+            continue;
+        }
+        out.push(ch);
+        i += 1;
+    }
+    out
+}
+
+fn is_suit(ch: char) -> bool {
+    matches!(ch, '♣' | '♥' | '♦' | '♠')
+}
+
+fn suit_phrase(ch: char) -> &'static str {
+    match ch {
+        '♣' => "of clubs ",
+        '♥' => "of hearts ",
+        '♦' => "of diamonds ",
+        '♠' => "of spades ",
+        _ => "",
+    }
+}
+
+fn card_rank_word(ch: char) -> Option<&'static str> {
+    match ch {
+        'A' | 'a' => Some("ace"),
+        'K' | 'k' => Some("king"),
+        'Q' | 'q' => Some("queen"),
+        'J' | 'j' => Some("jack"),
+        'T' | 't' => Some("ten"),
+        '2'..='9' => Some(match ch {
+            '2' => "two",
+            '3' => "three",
+            '4' => "four",
+            '5' => "five",
+            '6' => "six",
+            '7' => "seven",
+            '8' => "eight",
+            '9' => "nine",
+            _ => "",
+        }),
+        _ => None,
+    }
+}
+
 /// Fold common Latin diacritics to their ASCII bases so the tokenizer
 /// (which treats only `is_ascii_alphabetic` chars as part of words)
 /// doesn't split "fiancée" into "fianc" + "e" or drop "naïve" → "nave".
