@@ -252,6 +252,12 @@ fn read_is_past(ctx: &WordContext<'_>) -> bool {
     if ctx.prev(1).is_some_and(is_future_modal) {
         return false;
     }
+    // Infinitive marker "to" before "read" is decisive: "to read", "want to
+    // read", "going to read" — always present-tense /riːd/, even when later
+    // context contains words that look like past cues.
+    if ctx.prev(1).is_some_and(|w| w.eq_ignore_ascii_case("to")) {
+        return false;
+    }
     if ctx.prev(1).is_some_and(is_past_cue) || ctx.prev(2).is_some_and(is_past_cue) {
         return true;
     }
