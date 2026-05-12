@@ -105,11 +105,18 @@ pub fn fold_diacritics(text: &str) -> String {
 /// (a sentence-ending period, a math equals) keeps its existing
 /// handling downstream.
 pub fn normalize_urls(text: &str) -> String {
+    normalize_urls_with(text, |_| true)
+}
+
+/// `normalize_urls` variant: alpha runs inside a URL where
+/// `is_real_word` returns false are letter-spelled ("ch01" → "C H 01"),
+/// matching how a human reads non-word identifiers aloud.
+pub fn normalize_urls_with<F: Fn(&str) -> bool>(text: &str, is_real_word: F) -> String {
     let mut out = String::with_capacity(text.len());
     let chars: Vec<char> = text.chars().collect();
     let mut i = 0;
     while i < chars.len() {
-        if let Some((expanded, consumed)) = match_url(&chars, i) {
+        if let Some((expanded, consumed)) = match_url(&chars, i, &is_real_word) {
             out.push_str(&expanded);
             i += consumed;
         } else {
@@ -120,7 +127,11 @@ pub fn normalize_urls(text: &str) -> String {
     out
 }
 
-fn match_url(chars: &[char], start: usize) -> Option<(String, usize)> {
+fn match_url<F: Fn(&str) -> bool>(
+    chars: &[char],
+    start: usize,
+    is_real_word: &F,
+) -> Option<(String, usize)> {
     // Only consider a URL match at a word boundary.
     if start > 0 && chars[start - 1].is_ascii_alphanumeric() {
         return None;
@@ -178,30 +189,52 @@ fn match_url(chars: &[char], start: usize) -> Option<(String, usize)> {
             break;
         }
     }
-    let mut prev_class: Option<u8> = None;
-    for ch in url_part[cursor..].chars() {
-        // Lowercase all-uppercase letters inside the URL so filename-style
-        // all-caps tokens ("README", "CHANGELOG") don't trigger the
-        // letter-spelled emphasis path — in a URL they're words, not
-        // initialisms.
-        let ch = ch.to_ascii_lowercase();
-        // Insert a space at letter↔digit boundaries so identifiers like
-        // "ch01" / "page42" don't lose their digits when tokenize drops
-        // non-alphabetic characters that haven't been turned into words.
-        let class = if ch.is_ascii_alphabetic() {
-            Some(1)
-        } else if ch.is_ascii_digit() {
-            Some(2)
-        } else {
-            None
-        };
-        if let (Some(p), Some(c)) = (prev_class, class) {
-            if p != c {
-                spoken.push(' ');
-            }
+    // Walk url_part collecting alpha runs and digit runs separately;
+    // emit punctuation as the spoken forms; for each alpha run decide
+    // letter-spell vs read-as-word based on `is_real_word`.
+    let mut current_alpha = String::new();
+    let mut current_digit = String::new();
+    let flush_alpha = |buf: &mut String, out: &mut String| {
+        if buf.is_empty() {
+            return;
         }
-        prev_class = class;
-        match ch {
+        if is_real_word(buf) {
+            out.push(' ');
+            out.push_str(buf);
+            out.push(' ');
+        } else {
+            for c in buf.chars() {
+                out.push(' ');
+                out.push(c.to_ascii_uppercase());
+            }
+            out.push(' ');
+        }
+        buf.clear();
+    };
+    let flush_digit = |buf: &mut String, out: &mut String| {
+        if buf.is_empty() {
+            return;
+        }
+        out.push(' ');
+        out.push_str(buf);
+        out.push(' ');
+        buf.clear();
+    };
+    for ch in url_part[cursor..].chars() {
+        let lower = ch.to_ascii_lowercase();
+        if lower.is_ascii_alphabetic() {
+            flush_digit(&mut current_digit, &mut spoken);
+            current_alpha.push(lower);
+            continue;
+        }
+        if lower.is_ascii_digit() {
+            flush_alpha(&mut current_alpha, &mut spoken);
+            current_digit.push(lower);
+            continue;
+        }
+        flush_alpha(&mut current_alpha, &mut spoken);
+        flush_digit(&mut current_digit, &mut spoken);
+        match lower {
             '.' => spoken.push_str(" dot "),
             '/' => spoken.push_str(" slash "),
             ':' => spoken.push_str(" colon "),
@@ -214,6 +247,8 @@ fn match_url(chars: &[char], start: usize) -> Option<(String, usize)> {
             other => spoken.push(other),
         }
     }
+    flush_alpha(&mut current_alpha, &mut spoken);
+    flush_digit(&mut current_digit, &mut spoken);
     spoken.push(' ');
     spoken.push_str(&trailing);
     Some((spoken, span.chars().count()))

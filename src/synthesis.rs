@@ -1,6 +1,7 @@
 use crate::model::Kokoro;
 use crate::phonemizer::Phonemizer;
-use crate::phonemizer::normalize::normalize_urls;
+use crate::phonemizer::normalize::normalize_urls_with;
+use crate::phonemizer::{lexicon, misaki_gold};
 use crate::phonemizer::sentence::split_sentences;
 use anyhow::{bail, Context, Result};
 use candle_core::{Device, Tensor};
@@ -88,7 +89,11 @@ pub fn synthesize_text_opts(
 ) -> Result<Vec<f32>> {
     // URL-normalize before sentence splitting; otherwise the splitter
     // cuts "example.com/path" at the dot.
-    let prepped = normalize_urls(text);
+    let gold = misaki_gold::lexicon();
+    let lex = lexicon::lexicon();
+    let prepped = normalize_urls_with(text, |w| {
+        gold.lookup(w).is_some() || lex.lookup(w).is_some()
+    });
     let sentences: Vec<String> = if opts.split_sentences {
         split_sentences(&prepped)
     } else {

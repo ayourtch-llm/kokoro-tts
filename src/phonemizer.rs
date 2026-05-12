@@ -37,9 +37,9 @@ impl Phonemizer for StubPhonemizer {
 
 mod arpabet;
 mod homograph;
-mod lexicon;
+pub mod lexicon;
 mod lts;
-mod misaki_gold;
+pub mod misaki_gold;
 pub mod normalize;
 pub mod sentence;
 #[allow(unused_imports)]
@@ -86,7 +86,9 @@ impl Phonemizer for TwoTierPhonemizer {
         let mut out = Vec::new();
         // URL-normalize before sentence splitting so the splitter doesn't
         // cut a URL at its dots (e.g. "example.com/path").
-        let url_normalized = normalize::normalize_urls(text);
+        let url_normalized = normalize::normalize_urls_with(text, |w| {
+            gold.lookup(w).is_some() || lexicon.lookup(w).is_some()
+        });
         for sentence in sentence::split_sentences(&url_normalized) {
             let sentence_out = phonemize_chunk(&sentence, gold, lexicon);
             if !sentence_out.is_empty() {
@@ -145,7 +147,9 @@ pub fn pre_phonemize_normalize(text: &str) -> String {
         false
     };
     let folded = normalize::fold_diacritics(text);
-    let url_expanded = normalize::normalize_urls(&folded);
+    let url_expanded = normalize::normalize_urls_with(&folded, |w| {
+        gold.lookup(w).is_some() || lexicon.lookup(w).is_some()
+    });
     normalize_cardinals(&normalize::normalize_acronyms_with(
         &normalize::lowercase_emphasis_function_words(&normalize::normalize_units(
             &normalize::normalize_money_time(&normalize::normalize_math(
