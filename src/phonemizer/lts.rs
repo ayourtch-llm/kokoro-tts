@@ -237,6 +237,26 @@ fn match_prefix(word: &str) -> Option<(Vec<Phone>, String)> {
 
 fn match_suffix(word: &str) -> Option<(String, Vec<Phone>)> {
     for (suffix, phones) in [
+        // British-spelling -ise/-ised/-ising that map to American /aɪz/.
+        // Listed before -ed/-ing/-ation so the longer match wins.
+        (
+            "isation",
+            vec![
+                phone("aɪ", true),
+                phone("z", false),
+                phone("eɪ", true),
+                phone("ʃ", false),
+                phone("ən", true),
+            ],
+        ),
+        ("ising", vec![phone("aɪ", true), phone("z", false), phone("ɪ", true), phone("ŋ", false)]),
+        ("ised", vec![phone("aɪ", true), phone("z", false), phone("d", false)]),
+        ("ise", vec![phone("aɪ", true), phone("z", false)]),
+        // -ity / -ities / -ities is /ɪti(z)/ — without this LTS falls
+        // through to "y" → /aɪ/ and "commutativity" comes out as
+        // /...vɪtaɪ/. Listed before -ies to win the longer match.
+        ("ities", vec![phone("ɪ", true), phone("t", false), phone("i", true), phone("z", false)]),
+        ("ity", vec![phone("ɪ", true), phone("t", false), phone("i", true)]),
         (
             "ization",
             vec![
