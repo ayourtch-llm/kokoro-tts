@@ -1758,6 +1758,57 @@ fn match_unit_suffix(
     if lower.starts_with("°k") {
         return Some(("degrees Kelvin", "degrees Kelvin", 2, false));
     }
+    // Storage / memory (longer match first so KiB beats Ki etc.)
+    if lower.starts_with("kib") {
+        return Some(("kibibyte", "kibibytes", 3, true));
+    }
+    if lower.starts_with("mib") {
+        return Some(("mebibyte", "mebibytes", 3, true));
+    }
+    if lower.starts_with("gib") {
+        return Some(("gibibyte", "gibibytes", 3, true));
+    }
+    if lower.starts_with("tib") {
+        return Some(("tebibyte", "tebibytes", 3, true));
+    }
+    if lower.starts_with("kb") {
+        return Some(("kilobyte", "kilobytes", 2, true));
+    }
+    if lower.starts_with("mb") {
+        return Some(("megabyte", "megabytes", 2, true));
+    }
+    if lower.starts_with("gb") {
+        return Some(("gigabyte", "gigabytes", 2, true));
+    }
+    if lower.starts_with("tb") {
+        return Some(("terabyte", "terabytes", 2, true));
+    }
+    if lower.starts_with("pb") {
+        return Some(("petabyte", "petabytes", 2, true));
+    }
+    // Network speed
+    if lower.starts_with("gbps") {
+        return Some(("gigabits per second", "gigabits per second", 4, false));
+    }
+    if lower.starts_with("mbps") {
+        return Some(("megabits per second", "megabits per second", 4, false));
+    }
+    if lower.starts_with("kbps") {
+        return Some(("kilobits per second", "kilobits per second", 4, false));
+    }
+    // Frequency
+    if lower.starts_with("ghz") {
+        return Some(("gigahertz", "gigahertz", 3, false));
+    }
+    if lower.starts_with("mhz") {
+        return Some(("megahertz", "megahertz", 3, false));
+    }
+    if lower.starts_with("khz") {
+        return Some(("kilohertz", "kilohertz", 3, false));
+    }
+    if lower.starts_with("hz") {
+        return Some(("hertz", "hertz", 2, false));
+    }
     if lower.starts_with("mm") {
         return Some(("millimeter", "millimeters", 2, true));
     }
