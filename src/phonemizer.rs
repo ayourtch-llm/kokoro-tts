@@ -438,6 +438,20 @@ fn try_hyphenated(
     if !word.contains('-') {
         return None;
     }
+    // First, try the de-hyphenated form in gold/CMUdict. Catches loanword
+    // compounds like "tai-chi" where the dictionary stores "taichi" with
+    // a /tʃi/ pronunciation that a part-by-part split would miss (the bare
+    // "chi" is the Greek letter /kaɪ/).
+    let dehyphenated: String = word.chars().filter(|c| *c != '-').collect();
+    if !dehyphenated.is_empty() && dehyphenated != word {
+        if let Some(ipa) = gold
+            .lookup(&dehyphenated)
+            .map(str::to_owned)
+            .or_else(|| lexicon.lookup(&dehyphenated).map(arpabet::phones_to_ipa))
+        {
+            return Some(ipa);
+        }
+    }
     let parts: Vec<&str> = word.split('-').filter(|p| !p.is_empty()).collect();
     if parts.len() < 2 {
         return None;
@@ -656,7 +670,7 @@ mod tests {
         assert!(TwoTierPhonemizer
             .phonemize("I read the book yesterday.")
             .unwrap()
-            .contains("ɹɛd"));
+            .contains("ɹˈɛd"));
         assert!(TwoTierPhonemizer
             .phonemize("She will lead the meeting.")
             .unwrap()

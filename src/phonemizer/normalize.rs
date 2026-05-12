@@ -666,6 +666,14 @@ fn match_acronym_with<F: Fn(&str) -> bool>(
     start: usize,
     is_real_word: &F,
 ) -> Option<(String, usize)> {
+    // Require a word boundary before the run, otherwise "iNTRODUCTION"
+    // starts matching at the 'N' (index 1) and spells out "NTRODUCTION"
+    // letter-by-letter, even though the whole word case-folds to the
+    // CMUdict entry "introduction". Same shape as sentence::
+    // match_abbreviation's word-boundary guard.
+    if start > 0 && chars[start - 1].is_ascii_alphanumeric() {
+        return None;
+    }
     let tail = chars.get(start..)?;
     let mut end = 0usize;
     while let Some(ch) = tail.get(end) {
