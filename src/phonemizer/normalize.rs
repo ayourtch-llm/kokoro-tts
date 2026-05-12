@@ -270,7 +270,8 @@ fn match_url<F: Fn(&str) -> bool>(
     let looks_url = lower.starts_with("http://")
         || lower.starts_with("https://")
         || lower.starts_with("www.")
-        || matches_tld(&lower);
+        || matches_tld(&lower)
+        || looks_like_unix_path(&lower);
     if !looks_url {
         return None;
     }
@@ -411,6 +412,25 @@ fn match_ip_address(span: &str) -> Option<String> {
         out.push_str(p);
     }
     Some(out)
+}
+
+/// Unix-style path: starts with '/' and contains at least one more '/'
+/// (so a sentence-final "/" doesn't trigger) or has the leading
+/// '/' followed by a recognizable path segment of alphanumerics.
+fn looks_like_unix_path(lower: &str) -> bool {
+    if !lower.starts_with('/') {
+        return false;
+    }
+    let rest = &lower[1..];
+    if rest.is_empty() {
+        return false;
+    }
+    if !rest.chars().next().is_some_and(|c| c.is_ascii_alphanumeric()) {
+        return false;
+    }
+    // Must have at least 2 chars after '/' so we don't mis-match a
+    // bare "/a" or "/I" at sentence start.
+    rest.contains('/') || rest.len() >= 2
 }
 
 fn matches_tld(lower: &str) -> bool {
