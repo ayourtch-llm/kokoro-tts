@@ -37,6 +37,7 @@ impl Phonemizer for StubPhonemizer {
 
 mod arpabet;
 mod homograph;
+pub mod custom_vocab;
 pub mod lexicon;
 mod lts;
 pub mod misaki_gold;
@@ -132,6 +133,16 @@ enum Token {
 pub fn pre_phonemize_normalize(text: &str) -> String {
     let gold = misaki_gold::lexicon();
     let lexicon = lexicon::lexicon();
+    // User-supplied regex rewrites: applied to raw input before any
+    // built-in normalization so they can fix idiosyncratic source
+    // spellings, expand custom abbreviations, etc.
+    let rewritten;
+    let text: &str = if let Some(vocab) = custom_vocab::get() {
+        rewritten = vocab.apply_rewrites(text);
+        &rewritten
+    } else {
+        text
+    };
     let is_emphasis_word = |base: &str| -> bool {
         let lower = base.to_ascii_lowercase();
         let len = base.len();
@@ -226,6 +237,12 @@ fn phonemize_word(
     gold: &misaki_gold::MisakiGoldLexicon,
     lexicon: &lexicon::Lexicon,
 ) -> String {
+    // User-supplied per-word pronunciation override: highest priority.
+    if let Some(vocab) = custom_vocab::get() {
+        if let Some(ipa) = vocab.lookup_pronunciation(word) {
+            return ipa.to_string();
+        }
+    }
     if let Some(ipa) = homograph::phonemize(word, ctx) {
         return ipa;
     }

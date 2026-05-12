@@ -30,6 +30,7 @@ struct Args {
     silence_ms: Option<u64>,
     max_phonemes: Option<usize>,
     device: String,
+    vocab: Option<PathBuf>,
 }
 
 impl Args {
@@ -49,6 +50,7 @@ impl Args {
             silence_ms: None,
             max_phonemes: None,
             device: "auto".to_string(),
+            vocab: None,
         };
         while let Some(arg) = args.next() {
             match arg.as_str() {
@@ -72,12 +74,13 @@ impl Args {
                         Some(args.next().context("--max-phonemes")?.parse::<usize>()?);
                 }
                 "--device" => parsed.device = args.next().context("--device")?,
+                "--vocab" => parsed.vocab = Some(PathBuf::from(args.next().context("--vocab")?)),
                 "--help" | "-h" => {
                     println!(
                         "usage: cargo run --release --bin speak -- [--model-dir DIR] [--voice PATH]\n\
                          \t[--text \"...\" | --infile FILE | --phonemes \"...\"]\n\
                          \t[--out FILE] [--speed F] [--device auto|cpu|metal] [--verbose] [--play]\n\
-                         \t[--no-split] [--silence-ms N] [--max-phonemes N]"
+                         \t[--no-split] [--silence-ms N] [--max-phonemes N] [--vocab FILE.json]"
                     );
                     std::process::exit(0);
                 }
@@ -112,6 +115,13 @@ fn main() -> Result<()> {
         .try_init()
         .ok();
     let mut args = Args::parse()?;
+    if let Some(ref path) = args.vocab {
+        use kokoro_tts::phonemizer::custom_vocab;
+        let vocab = custom_vocab::CustomVocab::load(path)
+            .with_context(|| format!("loading custom vocab from {}", path.display()))?;
+        custom_vocab::set(vocab)?;
+        tracing::info!("loaded custom vocab from {}", path.display());
+    }
     if let Some(ref infile) = args.infile {
         args.text = Some(
             fs::read_to_string(infile)

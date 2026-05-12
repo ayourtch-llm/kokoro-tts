@@ -1803,6 +1803,7 @@ dependencies = [
  "hf-hub",
  "hound",
  "nemotron-speech",
+ "regex",
  "reqwest",
  "serde",
  "serde_json",
