@@ -215,8 +215,14 @@ fn match_url<F: Fn(&str) -> bool>(
         if buf.is_empty() {
             return;
         }
-        out.push(' ');
-        out.push_str(buf);
+        // Read digits one-at-a-time in URLs so "01" doesn't collapse to
+        // "one" (losing the leading zero) and longer numbers don't get
+        // re-parsed as quantities ("8080" → "eight thousand eighty" is
+        // unnatural in a URL or version tag).
+        for c in buf.chars() {
+            out.push(' ');
+            out.push(c);
+        }
         out.push(' ');
         buf.clear();
     };
