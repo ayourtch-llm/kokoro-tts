@@ -380,6 +380,10 @@ fn main() -> Result<()> {
 
     let mut total_edits = 0usize;
     let mut total_words = 0usize;
+    let mut nonzero_edits = 0usize;
+    let mut nonzero_words = 0usize;
+    let mut nonzero_samples = 0usize;
+    let mut total_samples = 0usize;
     let mut empty_phon = 0usize;
     let mut errors = 0usize;
 
@@ -437,6 +441,12 @@ fn main() -> Result<()> {
         let (rate, d, denom) = wer(text, &hyp);
         total_edits += d;
         total_words += denom;
+        total_samples += 1;
+        if d > 0 {
+            nonzero_edits += d;
+            nonzero_words += denom;
+            nonzero_samples += 1;
+        }
         println!(
             "{idx:>6} | WER={:.3} ({}/{} words)",
             rate, d, denom,
@@ -455,6 +465,15 @@ fn main() -> Result<()> {
         println!(
             "summary: aggregate WER={:.3} ({} edits / {} ref-words)  empty_phon={} errors={}",
             aggregate, total_edits, total_words, empty_phon, errors,
+        );
+        let defect_rate = if nonzero_words == 0 {
+            0.0
+        } else {
+            nonzero_edits as f64 / nonzero_words as f64
+        };
+        println!(
+            "  defective-only WER={:.3} ({} edits / {} ref-words across {}/{} samples)",
+            defect_rate, nonzero_edits, nonzero_words, nonzero_samples, total_samples,
         );
     }
     Ok(())
