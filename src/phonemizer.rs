@@ -575,7 +575,11 @@ fn tokenize(text: String) -> Vec<Token> {
         // word like a straight apostrophe so possessives and contractions
         // stay together as one token.
         if ch.is_ascii_alphabetic() || ch == '\'' || ch == '\u{2019}' || ch == '-' {
-            current.push(ch);
+            // Fold the right-single-quote U+2019 to ASCII apostrophe so
+            // downstream lookups (CMUdict has "you're", not "you’re")
+            // hit. The tokenizer already keeps them in the word; we
+            // just need the spelling to match the dictionary.
+            current.push(if ch == '\u{2019}' { '\'' } else { ch });
         } else {
             if !current.is_empty() {
                 tokens.push(Token::Word(std::mem::take(&mut current)));
