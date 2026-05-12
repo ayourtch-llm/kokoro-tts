@@ -66,6 +66,16 @@ pub fn separate_digit_alpha_boundaries(text: &str) -> String {
             && chars[i + 1].is_ascii_digit()
         {
             out.push(' ');
+        } else if ch == ':'
+            && i > 0
+            && chars[i - 1].is_ascii_alphabetic()
+            && i + 1 < chars.len()
+            && chars[i + 1].is_ascii_digit()
+        {
+            // "bb:11" — separate so the colon doesn't block the number
+            // boundary in normalize_cardinals. (Digit:digit time
+            // patterns like "8:30" preserved because prev isn't alpha.)
+            out.push(' ');
         }
         i += 1;
     }
