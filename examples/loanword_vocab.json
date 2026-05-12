@@ -1,0 +1,28 @@
+{
+  "rewrites": [
+    {"pattern": "l'[ÉE]cole", "replacement": "lay-cole"},
+    {"pattern": "polytechnique", "replacement": "polly-tek-neek"},
+    {"pattern": "[UuÜü]niversit[äa]t", "replacement": "oo-nee-vair-zee-taht"},
+    {"pattern": "K[öo]ln", "replacement": "kurln"},
+    {"pattern": "Ångstr[öo]m", "replacement": "ong-strum"},
+    {"pattern": "M[üu]ller", "replacement": "moller"},
+    {"pattern": "Hern[áa]ndez", "replacement": "her-nan-dez"},
+    {"pattern": "Garc[íi]a", "replacement": "gar-see-ah"},
+    {"pattern": "Bach", "replacement": "bahkh"},
+    {"pattern": "crème", "replacement": "krem"},
+    {"pattern": "fraîche", "replacement": "fresh"},
+    {"pattern": "pâté", "replacement": "pah-tay"},
+    {"pattern": "foie gras", "replacement": "fwah-grah"},
+    {"pattern": "Lao Tzu", "replacement": "lao tsoo"},
+    {"pattern": "道德经", "replacement": "dow-duh-jing"},
+    {"pattern": "Antipasti", "replacement": "an-tee-pas-tee"},
+    {"pattern": "linguine", "replacement": "lin-gwee-nee"},
+    {"pattern": "Schleichhändler", "replacement": "shlykh-hendler"},
+    {"pattern": "Ceridwen", "replacement": "kair-id-wen"},
+    {"pattern": "Eryri", "replacement": "eh-rur-ee"},
+    {"pattern": "Buonaccorsi", "replacement": "bwoh-na-kor-see"},
+    {"pattern": "Władysław", "replacement": "vlah-dee-swaff"},
+    {"pattern": "Jagiełło", "replacement": "yah-gyeh-woh"}
+  ],
+  "pronunciations": {}
+}

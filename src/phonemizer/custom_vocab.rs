@@ -28,7 +28,9 @@
 //! }
 //! ```
 //!
-//! Wired in via `set_custom_vocab` from a CLI flag.
+//! Wired in via `set_custom_vocab` from a CLI flag. See
+//! `examples/loanword_vocab.json` for a worked example covering
+//! French / German / Polish / Chinese loanwords.
 
 use anyhow::{Context, Result};
 use regex::Regex;
