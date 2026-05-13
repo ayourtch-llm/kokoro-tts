@@ -28,3 +28,4 @@ uuid = { version = "1", features = ["v4"] }
 reqwest = { version = "0.11", features = ["stream"] }
 nemotron-speech = { path = "../nemotron-speech", optional = true }
 regex = "1.12.3"
+mp3lame-encoder = "0.2"

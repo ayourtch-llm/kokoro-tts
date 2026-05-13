@@ -24,6 +24,12 @@ pub struct SynthesisOptions {
     pub silence_padding_samples: usize,
     pub max_sentence_phonemes: usize,
     pub split_sentences: bool,
+    /// Number of processed (post-phonemization) chunks to skip before
+    /// synthesizing. Useful for resuming a long run partway through.
+    pub skip_chunks: usize,
+    /// Maximum number of chunks to synthesize in this run, counting
+    /// from `skip_chunks`. `None` means no limit.
+    pub n_chunks: Option<usize>,
 }
 
 impl Default for SynthesisOptions {
@@ -32,6 +38,8 @@ impl Default for SynthesisOptions {
             silence_padding_samples: SILENCE_PADDING_SAMPLES,
             max_sentence_phonemes: MAX_SENTENCE_PHONEMES,
             split_sentences: true,
+            skip_chunks: 0,
+            n_chunks: None,
         }
     }
 }
@@ -155,8 +163,26 @@ pub fn synthesize_text_opts_streaming(
 
     let mut audio_chunks: Vec<Vec<f32>> = Vec::new();
     let total = processed.len();
+    let start = opts.skip_chunks.min(total);
+    let end = match opts.n_chunks {
+        Some(n) => start.saturating_add(n).min(total),
+        None => total,
+    };
+    if start >= total && total > 0 {
+        bail!(
+            "--skip-chunks ({}) is at or past the chunk count ({}); nothing to render",
+            opts.skip_chunks,
+            total
+        );
+    }
+    if end == start {
+        bail!("--n-chunks resolves to 0; nothing to render");
+    }
+    let window = end - start;
     let t0 = std::time::Instant::now();
-    for idx in 0..total {
+    for window_idx in 0..window {
+        let idx = start + window_idx;
+        let last_in_window = window_idx + 1 == window;
         let (sentence, phonemes) = match &processed[idx] {
             Chunk::Processed(s, p) => (s, p),
             Chunk::Pause => {
@@ -222,7 +248,7 @@ pub fn synthesize_text_opts_streaming(
         }
         if let Some(cb) = on_chunk {
             cb(&samples, idx + 1, total);
-            if idx + 1 < total && opts.silence_padding_samples > 0 {
+            if !last_in_window && opts.silence_padding_samples > 0 {
                 let pad = vec![0.0f32; opts.silence_padding_samples];
                 cb(&pad, idx + 1, total);
             }
@@ -282,6 +308,58 @@ pub fn soft_normalize(samples: &[f32]) -> (Vec<f32>, f32) {
     let scale = if max_abs > 1.0 { 1.0 / max_abs } else { 1.0 };
     let normalized = samples.iter().map(|&v| v * scale).collect();
     (normalized, scale)
+}
+
+/// Picks a writer by file extension: `.mp3` → LAME MP3, anything else → WAV.
+pub fn write_audio(samples: &[f32], path: &Path) -> Result<()> {
+    let is_mp3 = path
+        .extension()
+        .and_then(|s| s.to_str())
+        .map(|ext| ext.eq_ignore_ascii_case("mp3"))
+        .unwrap_or(false);
+    if is_mp3 {
+        write_mp3(samples, path)
+    } else {
+        write_wav(samples, path)
+    }
+}
+
+pub fn write_mp3(samples: &[f32], path: &Path) -> Result<()> {
+    use mp3lame_encoder::{Bitrate, Builder, FlushNoGap, MonoPcm, Quality};
+
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+    }
+
+    let mut builder = Builder::new().context("creating LAME builder")?;
+    builder
+        .set_num_channels(1)
+        .map_err(|e| anyhow::anyhow!("LAME set channels: {e}"))?;
+    builder
+        .set_sample_rate(24_000)
+        .map_err(|e| anyhow::anyhow!("LAME set sample rate: {e}"))?;
+    builder
+        .set_brate(Bitrate::Kbps96)
+        .map_err(|e| anyhow::anyhow!("LAME set bitrate: {e}"))?;
+    builder
+        .set_quality(Quality::Best)
+        .map_err(|e| anyhow::anyhow!("LAME set quality: {e}"))?;
+    let mut encoder = builder
+        .build()
+        .map_err(|e| anyhow::anyhow!("initializing LAME encoder: {e}"))?;
+
+    let mut out = Vec::with_capacity(mp3lame_encoder::max_required_buffer_size(samples.len()));
+    encoder
+        .encode_to_vec(MonoPcm(samples), &mut out)
+        .map_err(|e| anyhow::anyhow!("LAME encode: {e}"))?;
+    // Reserve room for the final frame(s) before flushing.
+    out.reserve(7200);
+    encoder
+        .flush_to_vec::<FlushNoGap>(&mut out)
+        .map_err(|e| anyhow::anyhow!("LAME flush: {e}"))?;
+
+    fs::write(path, &out).with_context(|| format!("writing {}", path.display()))?;
+    Ok(())
 }
 
 pub fn write_wav(samples: &[f32], path: &Path) -> Result<()> {

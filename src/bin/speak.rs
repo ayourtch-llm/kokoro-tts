@@ -8,7 +8,7 @@ use kokoro_tts::model::Kokoro;
 use kokoro_tts::phonemizer::{TwoTierPhonemizer, MILESTONE_TEST_PHONEMES};
 use kokoro_tts::synthesis::resolve_resource_path;
 use kokoro_tts::synthesis::{
-    samples_to_tensor, soft_normalize, synthesize_phonemes, write_wav,
+    samples_to_tensor, soft_normalize, synthesize_phonemes, write_audio,
     ProgressFn, SynthesisOptions, MAX_SENTENCE_PHONEMES, SILENCE_PADDING_SAMPLES,
 };
 use std::fs;
@@ -31,6 +31,8 @@ struct Args {
     max_phonemes: Option<usize>,
     device: String,
     vocab: Option<PathBuf>,
+    skip_chunks: usize,
+    n_chunks: Option<usize>,
 }
 
 impl Args {
@@ -51,6 +53,8 @@ impl Args {
             max_phonemes: None,
             device: "auto".to_string(),
             vocab: None,
+            skip_chunks: 0,
+            n_chunks: None,
         };
         while let Some(arg) = args.next() {
             match arg.as_str() {
@@ -75,12 +79,21 @@ impl Args {
                 }
                 "--device" => parsed.device = args.next().context("--device")?,
                 "--vocab" => parsed.vocab = Some(PathBuf::from(args.next().context("--vocab")?)),
+                "--skip-chunks" => {
+                    parsed.skip_chunks =
+                        args.next().context("--skip-chunks")?.parse::<usize>()?;
+                }
+                "--n-chunks" => {
+                    parsed.n_chunks = Some(args.next().context("--n-chunks")?.parse::<usize>()?);
+                }
                 "--help" | "-h" => {
                     println!(
                         "usage: cargo run --release --bin speak -- [--model-dir DIR] [--voice PATH]\n\
                          \t[--text \"...\" | --infile FILE | --phonemes \"...\"]\n\
                          \t[--out FILE] [--speed F] [--device auto|cpu|metal] [--verbose] [--play]\n\
-                         \t[--no-split] [--silence-ms N] [--max-phonemes N] [--vocab FILE.json]"
+                         \t[--no-split] [--silence-ms N] [--max-phonemes N] [--vocab FILE.json]\n\
+                         \t[--skip-chunks N] [--n-chunks N]\n\
+                         output is WAV by default, or MP3 if --out ends with .mp3"
                     );
                     std::process::exit(0);
                 }
@@ -160,7 +173,7 @@ fn main() -> Result<()> {
     // Streaming playback already happened inside synthesize() per
     // chunk; no need to re-play the full buffer here.
     let _ = play_samples; // keep the import alive for potential future use
-    write_wav(&samples, &args.out)?;
+    write_audio(&samples, &args.out)?;
     println!("wrote {}", args.out.display());
     if scale < 1.0 {
         println!(
@@ -186,6 +199,8 @@ fn synthesize(
             .map(|ms| (24_000 * ms / 1_000) as usize)
             .unwrap_or(SILENCE_PADDING_SAMPLES),
         max_sentence_phonemes: args.max_phonemes.unwrap_or(MAX_SENTENCE_PHONEMES),
+        skip_chunks: args.skip_chunks,
+        n_chunks: args.n_chunks,
     };
     // If --play, open the audio device up front and enqueue each chunk
     // as it finishes synthesizing — so playback starts after chunk 1
