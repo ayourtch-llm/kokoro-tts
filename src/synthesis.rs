@@ -130,47 +130,18 @@ pub fn synthesize_text_opts_streaming(
         vec![prepped]
     };
 
-    enum Chunk {
-        Skipped,
-        Pause, // an explicit empty-line break from the source text
-        Processed(String, String), // (original_sentence, phonemes)
+    let total = sentences.len();
+    if total == 0 {
+        bail!("no sentences to render");
     }
-
-    let mut chunks: Vec<Chunk> = Vec::with_capacity(sentences.len());
-    for sentence in &sentences {
-        if sentence.trim().is_empty() {
-            chunks.push(Chunk::Pause);
-            continue;
-        }
-        let p = phonemizer
-            .phonemize(sentence)
-            .with_context(|| format!("phonemizing sentence: {:?}", sentence))?;
-        if p.is_empty() {
-            eprintln!("  (skipping sentence with no phonemes: {sentence:?})");
-            chunks.push(Chunk::Skipped);
-        } else {
-            chunks.push(Chunk::Processed(sentence.to_string(), p));
-        }
-    }
-
-    let processed: Vec<&Chunk> = chunks
-        .iter()
-        .filter(|c| matches!(c, Chunk::Processed(..) | Chunk::Pause))
-        .collect();
-    if !processed.iter().any(|c| matches!(c, Chunk::Processed(..))) {
-        bail!("phonemizer produced no chunks");
-    }
-
-    let mut audio_chunks: Vec<Vec<f32>> = Vec::new();
-    let total = processed.len();
     let start = opts.skip_chunks.min(total);
     let end = match opts.n_chunks {
         Some(n) => start.saturating_add(n).min(total),
         None => total,
     };
-    if start >= total && total > 0 {
+    if start >= total {
         bail!(
-            "--skip-chunks ({}) is at or past the chunk count ({}); nothing to render",
+            "--skip-chunks ({}) is at or past the sentence count ({}); nothing to render",
             opts.skip_chunks,
             total
         );
@@ -179,22 +150,37 @@ pub fn synthesize_text_opts_streaming(
         bail!("--n-chunks resolves to 0; nothing to render");
     }
     let window = end - start;
+
+    let mut audio_chunks: Vec<Vec<f32>> = Vec::new();
     let t0 = std::time::Instant::now();
     for window_idx in 0..window {
         let idx = start + window_idx;
         let last_in_window = window_idx + 1 == window;
-        let (sentence, phonemes) = match &processed[idx] {
-            Chunk::Processed(s, p) => (s, p),
-            Chunk::Pause => {
-                let silence = vec![0.0f32; opts.silence_padding_samples];
-                if let Some(cb) = on_chunk {
-                    cb(&silence, idx + 1, total);
-                }
-                audio_chunks.push(silence);
-                continue;
+        let sentence = &sentences[idx];
+
+        if sentence.trim().is_empty() {
+            // Explicit empty-line break in the source text: emit silence.
+            let silence = vec![0.0f32; opts.silence_padding_samples];
+            if let Some(cb) = on_chunk {
+                cb(&silence, idx + 1, total);
             }
-            _ => unreachable!(),
-        };
+            audio_chunks.push(silence);
+            if let Some(cb) = progress {
+                cb(sentence, idx + 1, total, t0.elapsed());
+            }
+            continue;
+        }
+
+        let phonemes = phonemizer
+            .phonemize(sentence)
+            .with_context(|| format!("phonemizing sentence: {:?}", sentence))?;
+        if phonemes.is_empty() {
+            eprintln!("  (skipping sentence with no phonemes: {sentence:?})");
+            if let Some(cb) = progress {
+                cb(sentence, idx + 1, total, t0.elapsed());
+            }
+            continue;
+        }
         let phoneme_count = phonemes.chars().count();
         if phoneme_count > opts.max_sentence_phonemes {
             bail!(
@@ -221,7 +207,7 @@ pub fn synthesize_text_opts_streaming(
         }
 
         let chunk_start = std::time::Instant::now();
-        let audio = model.forward(phonemes, &ref_s, speed).with_context(|| {
+        let audio = model.forward(&phonemes, &ref_s, speed).with_context(|| {
             format!(
                 "forward for chunk {} ({} phonemes)\n  sentence: {:?}",
                 idx + 1,
@@ -260,6 +246,9 @@ pub fn synthesize_text_opts_streaming(
         }
     }
 
+    if audio_chunks.is_empty() {
+        bail!("nothing rendered: window contained no audible sentences");
+    }
     Ok(concat_with_silence(&audio_chunks, opts.silence_padding_samples))
 }
 
