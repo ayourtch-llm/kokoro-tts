@@ -62,7 +62,7 @@ pub fn split_sentences(text: &str) -> Vec<String> {
         current.push(ch);
         i += ch_len;
 
-        if matches!(ch, '.' | '!' | '?') && should_end_sentence(text, i - ch_len, ch) {
+        if matches!(ch, '.' | '!' | '?' | ';') && should_end_sentence(text, i - ch_len, ch) {
             push_if_meaningful(&mut out, &current);
             current.clear();
         }
@@ -163,6 +163,17 @@ mod tests {
                 "We laughed in hilarious terms.",
                 "We struggled to communicate.",
             ]
+        );
+    }
+
+    #[test]
+    fn semicolons_split_long_lists() {
+        // Acknowledgement-style run-ons separated by semicolons must
+        // break, otherwise the whole sentence overflows the model's
+        // 510-phoneme cap.
+        assert_eq!(
+            split_sentences("Thanks to Alice; thanks to Bob; thanks to Carol."),
+            vec!["Thanks to Alice;", "thanks to Bob;", "thanks to Carol.",]
         );
     }
 
