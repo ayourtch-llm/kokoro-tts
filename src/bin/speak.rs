@@ -3,6 +3,7 @@
 use anyhow::{bail, Context, Result};
 use candle_core::{DType, Device};
 use kokoro_tts::audio::{play_samples, StreamingAudioOutput};
+use kokoro_tts::chapters::split_chapters;
 use kokoro_tts::default_device;
 use kokoro_tts::model::Kokoro;
 use kokoro_tts::phonemizer::{TwoTierPhonemizer, MILESTONE_TEST_PHONEMES};
@@ -12,7 +13,7 @@ use kokoro_tts::synthesis::{
     ProgressFn, SynthesisOptions, MAX_SENTENCE_PHONEMES, SILENCE_PADDING_SAMPLES,
 };
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 #[derive(Debug)]
@@ -33,6 +34,7 @@ struct Args {
     vocab: Option<PathBuf>,
     skip_chunks: usize,
     n_chunks: Option<usize>,
+    auto_split: bool,
 }
 
 impl Args {
@@ -55,6 +57,7 @@ impl Args {
             vocab: None,
             skip_chunks: 0,
             n_chunks: None,
+            auto_split: false,
         };
         while let Some(arg) = args.next() {
             match arg.as_str() {
@@ -86,14 +89,17 @@ impl Args {
                 "--n-chunks" => {
                     parsed.n_chunks = Some(args.next().context("--n-chunks")?.parse::<usize>()?);
                 }
+                "--auto-split" => parsed.auto_split = true,
                 "--help" | "-h" => {
                     println!(
                         "usage: cargo run --release --bin speak -- [--model-dir DIR] [--voice PATH]\n\
                          \t[--text \"...\" | --infile FILE | --phonemes \"...\"]\n\
                          \t[--out FILE] [--speed F] [--device auto|cpu|metal] [--verbose] [--play]\n\
                          \t[--no-split] [--silence-ms N] [--max-phonemes N] [--vocab FILE.json]\n\
-                         \t[--skip-chunks N] [--n-chunks N]\n\
-                         output is WAV by default, or MP3 if --out ends with .mp3"
+                         \t[--skip-chunks N] [--n-chunks N] [--auto-split]\n\
+                         output is WAV by default, or MP3 if --out ends with .mp3\n\
+                         with --auto-split, detected chapters are written to separate files\n\
+                         named OUT_001.ext, OUT_002.ext, …"
                     );
                     std::process::exit(0);
                 }
@@ -150,10 +156,22 @@ fn main() -> Result<()> {
     let model = Kokoro::load(&model_dir, &device).context("loading Kokoro")?;
     println!("model loaded, running forward ...");
 
-    let t0 = std::time::Instant::now();
-    let audio = synthesize(&model, &args, &voice, &device)?;
-    let dt = t0.elapsed();
+    if args.auto_split {
+        run_auto_split(&model, &args, &voice, &device)
+    } else {
+        let t0 = std::time::Instant::now();
+        let audio = synthesize(&model, &args, &voice, &device, None)?;
+        finalize_and_write(audio, &args.out, t0.elapsed())
+    }
+}
 
+/// Soft-normalize, log timing, and write the WAV/MP3 at `out_path`.
+/// Streaming playback already happened inside `synthesize()` per chunk.
+fn finalize_and_write(
+    audio: candle_core::Tensor,
+    out_path: &Path,
+    dt: std::time::Duration,
+) -> Result<()> {
     let samples = audio
         .to_dtype(DType::F32)?
         .flatten_all()?
@@ -169,12 +187,9 @@ fn main() -> Result<()> {
         dt.as_secs_f64(),
         duration_s / dt.as_secs_f64()
     );
-
-    // Streaming playback already happened inside synthesize() per
-    // chunk; no need to re-play the full buffer here.
     let _ = play_samples; // keep the import alive for potential future use
-    write_audio(&samples, &args.out)?;
-    println!("wrote {}", args.out.display());
+    write_audio(&samples, out_path)?;
+    println!("wrote {}", out_path.display());
     if scale < 1.0 {
         println!(
             "(soft-normalized by {:.4} because peak {:.3} > 1.0)",
@@ -185,11 +200,68 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+fn run_auto_split(
+    model: &Kokoro,
+    args: &Args,
+    voice: &PathBuf,
+    device: &Device,
+) -> Result<()> {
+    let text = args
+        .text
+        .as_deref()
+        .context("--auto-split requires --text or --infile")?;
+    let chapters = split_chapters(text);
+    if chapters.is_empty() {
+        bail!("no chapters detected (input is empty or whitespace-only)");
+    }
+    let total = chapters.len();
+    println!("auto-split: detected {total} chapter(s)");
+    for (idx, chapter_text) in chapters.iter().enumerate() {
+        let chapter_num = idx + 1;
+        let out_path = chapter_filename(&args.out, chapter_num, total);
+        let preview: String = chapter_text
+            .lines()
+            .find(|l| !l.trim().is_empty())
+            .unwrap_or("")
+            .chars()
+            .take(72)
+            .collect();
+        println!(
+            "\n=== chapter {chapter_num}/{total} → {} ===\n  preview: {preview}",
+            out_path.display()
+        );
+        let t0 = std::time::Instant::now();
+        let audio = synthesize(model, args, voice, device, Some(chapter_text))?;
+        finalize_and_write(audio, &out_path, t0.elapsed())?;
+    }
+    Ok(())
+}
+
+/// Builds `<stem>_NNN.<ext>` next to `out`, with zero-pad width that
+/// fits `total`. So total=12 → `_001`…`_012`; total=2000 → `_0001`.
+fn chapter_filename(out: &Path, idx: usize, total: usize) -> PathBuf {
+    let width = total.to_string().len().max(3);
+    let stem = out
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("chapter");
+    let ext = out.extension().and_then(|s| s.to_str());
+    let name = match ext {
+        Some(e) => format!("{stem}_{idx:0width$}.{e}"),
+        None => format!("{stem}_{idx:0width$}"),
+    };
+    match out.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p.join(name),
+        _ => PathBuf::from(name),
+    }
+}
+
 fn synthesize(
     model: &Kokoro,
     args: &Args,
     voice: &PathBuf,
     device: &Device,
+    text_override: Option<&str>,
 ) -> Result<candle_core::Tensor> {
     let phonemizer = TwoTierPhonemizer;
     let opts = SynthesisOptions {
@@ -276,7 +348,10 @@ fn synthesize(
             },
         )
     };
-    let samples = match (&args.phonemes, &args.text) {
+    // `text_override` (set by --auto-split for the per-chapter loop)
+    // takes precedence over args.text.
+    let text = text_override.or(args.text.as_deref());
+    let samples = match (&args.phonemes, text) {
         (Some(p), _) => synthesize_phonemes(model, p, voice, args.speed, device)?,
         (None, Some(t)) => kokoro_tts::synthesis::synthesize_text_opts_streaming(
             model,
@@ -306,7 +381,37 @@ fn synthesize(
 
 #[cfg(test)]
 mod tests {
+    use super::chapter_filename;
     use kokoro_tts::synthesis::{concat_with_silence, SILENCE_PADDING_SAMPLES};
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn chapter_filename_pads_width_to_three() {
+        let out = Path::new("book.mp3");
+        assert_eq!(chapter_filename(out, 1, 5), PathBuf::from("book_001.mp3"));
+        assert_eq!(chapter_filename(out, 12, 12), PathBuf::from("book_012.mp3"));
+    }
+
+    #[test]
+    fn chapter_filename_grows_width_for_many_chapters() {
+        let out = Path::new("novel.wav");
+        assert_eq!(chapter_filename(out, 7, 1500), PathBuf::from("novel_0007.wav"));
+    }
+
+    #[test]
+    fn chapter_filename_preserves_parent_dir() {
+        let out = Path::new("/tmp/audio/book.mp3");
+        assert_eq!(
+            chapter_filename(out, 3, 9),
+            PathBuf::from("/tmp/audio/book_003.mp3")
+        );
+    }
+
+    #[test]
+    fn chapter_filename_handles_no_extension() {
+        let out = Path::new("recording");
+        assert_eq!(chapter_filename(out, 2, 4), PathBuf::from("recording_002"));
+    }
 
     #[test]
     fn inserts_silence_between_chunks_only() {

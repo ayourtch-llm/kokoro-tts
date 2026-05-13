@@ -1,4 +1,5 @@
 pub mod audio;
+pub mod chapters;
 pub mod model;
 pub mod phonemizer;
 pub mod synthesis;
