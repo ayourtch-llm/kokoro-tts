@@ -23,6 +23,13 @@
 /// If the text contains no body→heading transition, the entire input is
 /// returned as a single chapter.
 pub fn split_chapters(text: &str) -> Vec<String> {
+    merge_short_runs(split_chapters_raw(text))
+}
+
+/// Pure detection step, with no post-processing merge. Exposed for
+/// tests so they can isolate the boundary-detection logic from the
+/// short-run-merging logic.
+fn split_chapters_raw(text: &str) -> Vec<String> {
     let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
     let segments = parse_segments(&normalized);
     if segments.is_empty() {
@@ -55,6 +62,45 @@ pub fn split_chapters(text: &str) -> Vec<String> {
         chapters.push(normalized[start_byte..end_byte].to_string());
     }
     chapters
+}
+
+/// Anything below this is treated as "short" for merge purposes: title
+/// pages, copyright boilerplate, TOC entries, review blurbs, image
+/// captions, publisher footers. ~2 KB is roughly 350 words ≈ 2 min of
+/// speech, which is well below any plausible real chapter size.
+const SHORT_CHAPTER_BYTES: usize = 2000;
+
+/// Fuse runs of consecutive short chapters into one. A long TOC stops
+/// being 30 tiny audio files. A *single* short chapter sandwiched
+/// between substantial ones (interstitial, single figure caption, etc.)
+/// is left alone, since merging it would just glue it to a stranger.
+fn merge_short_runs(chapters: Vec<String>) -> Vec<String> {
+    if chapters.len() < 2 {
+        return chapters;
+    }
+    let mut out: Vec<String> = Vec::with_capacity(chapters.len());
+    let mut pending: Vec<String> = Vec::new();
+    for ch in chapters {
+        if ch.len() < SHORT_CHAPTER_BYTES {
+            pending.push(ch);
+        } else {
+            flush_pending(&mut pending, &mut out);
+            out.push(ch);
+        }
+    }
+    flush_pending(&mut pending, &mut out);
+    out
+}
+
+fn flush_pending(pending: &mut Vec<String>, out: &mut Vec<String>) {
+    match pending.len() {
+        0 => {}
+        1 => out.push(pending.pop().unwrap()),
+        _ => {
+            out.push(pending.join("\n\n"));
+            pending.clear();
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -268,7 +314,9 @@ CHAPTER ONE
 
 The first sentence of chapter one.
 ";
-        let chapters = split_chapters(text);
+        // Detection only — these inputs are too short to survive the
+        // short-run merge, so check raw output.
+        let chapters = split_chapters_raw(text);
         assert_eq!(chapters.len(), 2);
         assert!(chapters[0].contains("intro paragraph"));
         assert!(chapters[1].contains("CHAPTER ONE"));
@@ -284,7 +332,7 @@ CHAPTER TWO
 
 Beginning of chapter two.
 ";
-        let chapters = split_chapters(text);
+        let chapters = split_chapters_raw(text);
         assert_eq!(chapters.len(), 2);
         assert!(chapters[0].starts_with("End of"));
         assert!(chapters[1].contains("CHAPTER TWO"));
@@ -340,7 +388,7 @@ CHAPTER 2
 
 Second body.
 ";
-        let chapters = split_chapters(text);
+        let chapters = split_chapters_raw(text);
         assert_eq!(chapters.len(), 3);
         assert!(chapters[0].starts_with("Preamble"));
         assert!(chapters[1].contains("CHAPTER 1"));
@@ -387,6 +435,108 @@ Third paragraph.
         // no period) but should NOT split the chapter.
         assert!(!is_heading("—John Boyne"));
         assert!(!is_heading("–Viktor E. Frankl"));
+    }
+
+    fn long_body(seed: &str, copies: usize) -> String {
+        let mut s = String::new();
+        for _ in 0..copies {
+            s.push_str(seed);
+        }
+        s
+    }
+
+    #[test]
+    fn merges_run_of_short_front_matter() {
+        // Real-book front matter alternates short heading sequences
+        // with short body paragraphs (copyright sentences, etc.), each
+        // body→heading transition splitting a new tiny chapter off.
+        // The merge step fuses that run into one chapter.
+        let body = long_body("This is a real chapter body sentence. ", 200);
+        let text = format!(
+            "TITLE PAGE
+
+Author name and edition.
+
+OXFORD UNIVERSITY PRESS
+
+It is a department of the university.
+
+COPYRIGHT NOTICE
+
+All rights reserved worldwide.
+
+CONTENTS
+
+Foreword and acknowledgements.
+
+CHAPTER ONE
+
+{body}
+",
+        );
+        let raw = split_chapters_raw(&text);
+        assert!(
+            raw.len() >= 4,
+            "fixture must produce multiple raw front-matter chapters; got {} (sizes {:?})",
+            raw.len(),
+            raw.iter().map(|c| c.len()).collect::<Vec<_>>()
+        );
+        let merged = split_chapters(&text);
+        assert_eq!(merged.len(), 2, "got sizes: {:?}", merged.iter().map(|c| c.len()).collect::<Vec<_>>());
+        assert!(merged[0].contains("TITLE PAGE"));
+        assert!(merged[0].contains("CONTENTS"));
+        assert!(merged[1].contains("CHAPTER ONE"));
+    }
+
+    #[test]
+    fn keeps_lone_short_chapter_between_long_ones() {
+        let big_a = long_body("First chapter sentence. ", 200);
+        let big_b = long_body("Third chapter sentence. ", 200);
+        let text = format!(
+            "CHAPTER ONE
+
+{big_a}
+
+CHAPTER TWO
+
+Just one short sentence here.
+
+CHAPTER THREE
+
+{big_b}
+",
+        );
+        let chapters = split_chapters(&text);
+        assert_eq!(chapters.len(), 3);
+        assert!(chapters[1].contains("CHAPTER TWO"));
+        assert!(chapters[1].contains("Just one short sentence"));
+    }
+
+    #[test]
+    fn merges_trailing_endmatter_run() {
+        let body = long_body("Main chapter body sentence. ", 200);
+        let text = format!(
+            "CHAPTER ONE
+
+{body}
+
+PUBLISHER INFO
+
+Boston, MA
+
+COPYRIGHT NOTICE
+
+ISBN 12345678
+
+Index entry one
+",
+        );
+        let chapters = split_chapters(&text);
+        // One real chapter + one merged endmatter chunk.
+        assert_eq!(chapters.len(), 2);
+        assert!(chapters[0].contains("CHAPTER ONE"));
+        assert!(chapters[1].contains("PUBLISHER INFO"));
+        assert!(chapters[1].contains("ISBN"));
     }
 
     #[test]
