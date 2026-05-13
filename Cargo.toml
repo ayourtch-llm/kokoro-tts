@@ -29,3 +29,10 @@ reqwest = { version = "0.11", features = ["stream"] }
 nemotron-speech = { path = "../nemotron-speech", optional = true }
 regex = "1.12.3"
 mp3lame-encoder = "0.2"
+
+# Only built when `--features accuracy` is on; the source file is
+# entirely `#![cfg(feature = "accuracy")]` so without this gate cargo
+# would try to compile a bin with no main and fail.
+[[bin]]
+name = "tts_asr_roundtrip"
+required-features = ["accuracy"]
