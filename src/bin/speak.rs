@@ -216,9 +216,24 @@ fn run_auto_split(
     }
     let total = chapters.len();
     println!("auto-split: detected {total} chapter(s)");
+    let mut rendered = 0usize;
+    let mut skipped = 0usize;
+    let mut failed: Vec<(usize, String)> = Vec::new();
     for (idx, chapter_text) in chapters.iter().enumerate() {
         let chapter_num = idx + 1;
         let out_path = chapter_filename(&args.out, chapter_num, total);
+        // Resume: if the output file already exists, skip re-rendering.
+        // Lets you Ctrl-C and re-run the same command to pick up where
+        // you left off, and lets you mute unwanted chapters (TOC, etc.)
+        // by `touch`-ing their target paths before kicking off the run.
+        if out_path.exists() {
+            println!(
+                "\n=== chapter {chapter_num}/{total} → {} (exists, skipping) ===",
+                out_path.display()
+            );
+            skipped += 1;
+            continue;
+        }
         let preview: String = chapter_text
             .lines()
             .find(|l| !l.trim().is_empty())
@@ -231,8 +246,34 @@ fn run_auto_split(
             out_path.display()
         );
         let t0 = std::time::Instant::now();
-        let audio = synthesize(model, args, voice, device, Some(chapter_text))?;
-        finalize_and_write(audio, &out_path, t0.elapsed())?;
+        // Catch per-chapter failures (e.g. a 2000-phoneme run-on
+        // sentence in an acknowledgements block) so a single bad
+        // chapter doesn't abort the whole book. The output file is
+        // left missing so a future re-run retries it.
+        let chapter_result = synthesize(model, args, voice, device, Some(chapter_text))
+            .and_then(|audio| finalize_and_write(audio, &out_path, t0.elapsed()));
+        match chapter_result {
+            Ok(()) => rendered += 1,
+            Err(e) => {
+                let msg = format!("{e:#}");
+                eprintln!(
+                    "!! chapter {chapter_num}/{total} FAILED, skipping:\n   {}",
+                    msg.replace('\n', "\n   ")
+                );
+                failed.push((chapter_num, msg));
+            }
+        }
+    }
+    println!(
+        "\nauto-split done: {rendered} rendered, {skipped} skipped, {} failed",
+        failed.len()
+    );
+    if !failed.is_empty() {
+        println!("failed chapters:");
+        for (n, msg) in &failed {
+            let first_line = msg.lines().next().unwrap_or("");
+            println!("  {n}: {first_line}");
+        }
     }
     Ok(())
 }
