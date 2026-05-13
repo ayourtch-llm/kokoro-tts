@@ -171,75 +171,73 @@ pub fn synthesize_text_opts_streaming(
             continue;
         }
 
-        let phonemes = phonemizer
-            .phonemize(sentence)
-            .with_context(|| format!("phonemizing sentence: {:?}", sentence))?;
-        if phonemes.is_empty() {
-            eprintln!("  (skipping sentence with no phonemes: {sentence:?})");
+        let phoneme_pieces =
+            phonemize_with_fallback(sentence, phonemizer, opts.max_sentence_phonemes, idx + 1);
+        if phoneme_pieces.is_empty() {
+            eprintln!("  (sentence {} produced no usable phonemes; skipping)", idx + 1);
             if let Some(cb) = progress {
                 cb(sentence, idx + 1, total, t0.elapsed());
             }
             continue;
         }
-        let phoneme_count = phonemes.chars().count();
-        if phoneme_count > opts.max_sentence_phonemes {
-            bail!(
-                "sentence {} is too long at {} phonemes (max {}); \
-                 insert punctuation to split it or increase --max-phonemes.\n  \
-                 sentence: {:?}",
-                idx + 1,
-                phoneme_count,
-                opts.max_sentence_phonemes,
-                sentence,
-            );
-        }
-
-        let ref_s = Kokoro::load_voice(voice, phoneme_count, device)
-            .with_context(|| format!("loading voice {}", voice.display()))?;
-        if verbose {
-            println!(
-                "chunk {}/{}: phonemes={} voice_shape={:?}",
-                idx + 1,
-                total,
-                phoneme_count,
-                ref_s.dims()
-            );
-        }
 
         let chunk_start = std::time::Instant::now();
-        let audio = model.forward(&phonemes, &ref_s, speed).with_context(|| {
-            format!(
-                "forward for chunk {} ({} phonemes)\n  sentence: {:?}",
-                idx + 1,
-                phoneme_count,
-                sentence,
-            )
-        })?;
-        let samples = audio
-            .to_dtype(candle_core::DType::F32)?
-            .flatten_all()?
-            .to_vec1::<f32>()?;
-        if verbose {
-            let elapsed = chunk_start.elapsed();
-            let chunk_duration_s = samples.len() as f64 / 24_000.0;
-            println!(
-                "chunk {}/{}: {} samples ({:.3}s) in {:.3}s ({:.2}x realtime)",
-                idx + 1,
-                total,
-                samples.len(),
-                chunk_duration_s,
-                elapsed.as_secs_f64(),
-                chunk_duration_s / elapsed.as_secs_f64()
-            );
+        let mut sentence_samples: Vec<f32> = Vec::new();
+        for (piece_idx, phonemes) in phoneme_pieces.iter().enumerate() {
+            let phoneme_count = phonemes.chars().count();
+            let ref_s = Kokoro::load_voice(voice, phoneme_count, device)
+                .with_context(|| format!("loading voice {}", voice.display()))?;
+            if verbose {
+                println!(
+                    "chunk {}/{}{}: phonemes={} voice_shape={:?}",
+                    idx + 1,
+                    total,
+                    if phoneme_pieces.len() > 1 {
+                        format!(" piece {}/{}", piece_idx + 1, phoneme_pieces.len())
+                    } else {
+                        String::new()
+                    },
+                    phoneme_count,
+                    ref_s.dims()
+                );
+            }
+            let audio = model.forward(phonemes, &ref_s, speed).with_context(|| {
+                format!(
+                    "forward for chunk {} ({} phonemes)\n  sentence: {:?}",
+                    idx + 1,
+                    phoneme_count,
+                    sentence,
+                )
+            })?;
+            let samples = audio
+                .to_dtype(candle_core::DType::F32)?
+                .flatten_all()?
+                .to_vec1::<f32>()?;
+            if let Some(cb) = on_chunk {
+                cb(&samples, idx + 1, total);
+            }
+            sentence_samples.extend_from_slice(&samples);
         }
         if let Some(cb) = on_chunk {
-            cb(&samples, idx + 1, total);
             if !last_in_window && opts.silence_padding_samples > 0 {
                 let pad = vec![0.0f32; opts.silence_padding_samples];
                 cb(&pad, idx + 1, total);
             }
         }
-        audio_chunks.push(samples);
+        if verbose {
+            let elapsed = chunk_start.elapsed();
+            let chunk_duration_s = sentence_samples.len() as f64 / 24_000.0;
+            println!(
+                "chunk {}/{}: {} samples ({:.3}s) in {:.3}s ({:.2}x realtime)",
+                idx + 1,
+                total,
+                sentence_samples.len(),
+                chunk_duration_s,
+                elapsed.as_secs_f64(),
+                chunk_duration_s / elapsed.as_secs_f64()
+            );
+        }
+        audio_chunks.push(sentence_samples);
 
         if let Some(cb) = progress {
             cb(sentence, idx + 1, total, t0.elapsed());
@@ -250,6 +248,104 @@ pub fn synthesize_text_opts_streaming(
         bail!("nothing rendered: window contained no audible sentences");
     }
     Ok(concat_with_silence(&audio_chunks, opts.silence_padding_samples))
+}
+
+/// Phonemize a sentence, returning one or more phoneme strings, each
+/// sized to fit `max`. For typical short sentences this returns a
+/// single-element vec. For sentences that overflow the model's cap
+/// (acks run-ons, index entries, etc.) the splitter falls back through:
+///
+/// 1. Split the source on commas; phonemize and accept each piece that
+///    fits.
+/// 2. For any piece still over `max`, halve its word list recursively
+///    until each half fits.
+/// 3. A fragment that's a single word still over `max` (vanishingly
+///    rare in real text) is dropped with a warning.
+///
+/// Returns an empty vec only when nothing usable came out — caller
+/// should skip the sentence in that case.
+fn phonemize_with_fallback(
+    sentence: &str,
+    phonemizer: &impl Phonemizer,
+    max: usize,
+    sentence_idx: usize,
+) -> Vec<String> {
+    let phonemes = match phonemizer.phonemize(sentence) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!(
+                "  (sentence {} phonemize error: {e:#}; skipping)",
+                sentence_idx
+            );
+            return Vec::new();
+        }
+    };
+    if phonemes.is_empty() {
+        return Vec::new();
+    }
+    if phonemes.chars().count() <= max {
+        return vec![phonemes];
+    }
+    eprintln!(
+        "  (sentence {} is {} phonemes > {} cap; resplitting on commas/words)",
+        sentence_idx,
+        phonemes.chars().count(),
+        max
+    );
+    resplit_by_commas(sentence, phonemizer, max)
+}
+
+fn resplit_by_commas(text: &str, phonemizer: &impl Phonemizer, max: usize) -> Vec<String> {
+    let pieces: Vec<&str> = text
+        .split(',')
+        .map(|p| p.trim())
+        .filter(|p| !p.is_empty())
+        .collect();
+    if pieces.len() <= 1 {
+        // Nothing useful to split on. Skip straight to word-halving.
+        return halve_by_words(text, phonemizer, max);
+    }
+    let mut out = Vec::new();
+    for piece in pieces {
+        let Ok(phonemes) = phonemizer.phonemize(piece) else {
+            continue;
+        };
+        if phonemes.is_empty() {
+            continue;
+        }
+        if phonemes.chars().count() <= max {
+            out.push(phonemes);
+        } else {
+            out.extend(halve_by_words(piece, phonemizer, max));
+        }
+    }
+    out
+}
+
+fn halve_by_words(text: &str, phonemizer: &impl Phonemizer, max: usize) -> Vec<String> {
+    let Ok(phonemes) = phonemizer.phonemize(text) else {
+        return Vec::new();
+    };
+    if phonemes.is_empty() {
+        return Vec::new();
+    }
+    if phonemes.chars().count() <= max {
+        return vec![phonemes];
+    }
+    let words: Vec<&str> = text.split_whitespace().collect();
+    if words.len() <= 1 {
+        eprintln!(
+            "  (dropping un-splittable fragment of {} phonemes: {text:?})",
+            phonemes.chars().count()
+        );
+        return Vec::new();
+    }
+    let mid = words.len() / 2;
+    let left = words[..mid].join(" ");
+    let right = words[mid..].join(" ");
+    let mut out = halve_by_words(&left, phonemizer, max);
+    out.extend(halve_by_words(&right, phonemizer, max));
+    out
 }
 
 pub fn synthesize_phonemes(
@@ -396,4 +492,93 @@ fn civil_from_days(days: i64) -> (i32, u32, u32) {
     let m = mp + if mp < 10 { 3 } else { -9 };
     let year = y + if m <= 2 { 1 } else { 0 };
     (year as i32, m as u32, d as u32)
+}
+
+#[cfg(test)]
+mod fallback_tests {
+    use super::phonemize_with_fallback;
+    use crate::phonemizer::Phonemizer;
+    use anyhow::Result;
+
+    /// Test phonemizer that returns the input text unchanged, so char
+    /// count IS phoneme count. Lets us exercise the splitter logic
+    /// without a real phonemization model.
+    struct EchoPhonemizer;
+    impl Phonemizer for EchoPhonemizer {
+        fn phonemize(&self, text: &str) -> Result<String> {
+            Ok(text.to_string())
+        }
+    }
+
+    #[test]
+    fn under_cap_passes_through_as_single_piece() {
+        let pieces = phonemize_with_fallback("hello world", &EchoPhonemizer, 510, 1);
+        assert_eq!(pieces, vec!["hello world".to_string()]);
+    }
+
+    #[test]
+    fn over_cap_resplits_on_commas() {
+        // 300 chars + ", " + 300 chars = 602 chars > 510. Comma split
+        // yields two pieces of 300 chars, both under the cap.
+        let left = "a".repeat(300);
+        let right = "b".repeat(300);
+        let text = format!("{left}, {right}");
+        let pieces = phonemize_with_fallback(&text, &EchoPhonemizer, 510, 1);
+        assert_eq!(pieces.len(), 2);
+        for p in &pieces {
+            assert!(p.chars().count() <= 510, "piece too long: {} chars", p.len());
+        }
+    }
+
+    #[test]
+    fn comma_pieces_that_still_overflow_fall_back_to_word_halving() {
+        // Build a long sub-piece (700 chars, comma-separated single
+        // piece). Comma split returns one piece > cap; word-halving
+        // takes over and breaks it into halves until each fits.
+        let big = "word ".repeat(200); // 1000 chars, 200 words
+        let text = format!("short prefix, {big}");
+        let pieces = phonemize_with_fallback(&text, &EchoPhonemizer, 510, 1);
+        assert!(pieces.len() >= 2);
+        for p in &pieces {
+            assert!(p.chars().count() <= 510, "piece too long: {}", p.chars().count());
+        }
+    }
+
+    #[test]
+    fn no_commas_halves_directly() {
+        let text = "word ".repeat(200); // 1000 chars
+        let pieces = phonemize_with_fallback(&text, &EchoPhonemizer, 510, 1);
+        assert!(pieces.len() >= 2);
+        for p in &pieces {
+            assert!(p.chars().count() <= 510);
+        }
+    }
+
+    #[test]
+    fn single_huge_unsplittable_word_is_dropped() {
+        let huge = "a".repeat(600);
+        let pieces = phonemize_with_fallback(&huge, &EchoPhonemizer, 510, 1);
+        assert!(pieces.is_empty());
+    }
+
+    #[test]
+    fn empty_input_returns_empty() {
+        let pieces = phonemize_with_fallback("", &EchoPhonemizer, 510, 1);
+        assert!(pieces.is_empty());
+    }
+
+    #[test]
+    fn index_style_long_list_splits_into_many_small_pieces() {
+        // Models the index entry that broke chapter 146: a long
+        // comma-separated list of page numbers (~970 phonemes).
+        let entry = (1..=200)
+            .map(|n| format!("{n}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let pieces = phonemize_with_fallback(&entry, &EchoPhonemizer, 510, 1);
+        assert!(!pieces.is_empty());
+        for p in &pieces {
+            assert!(p.chars().count() <= 510);
+        }
+    }
 }
