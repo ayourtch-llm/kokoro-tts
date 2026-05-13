@@ -230,13 +230,28 @@ fn synthesize(
     });
     let progress: ProgressFn = {
         let verbose = args.verbose;
+        let skip = args.skip_chunks;
+        let n_chunks = args.n_chunks;
         Box::new(
             move |sentence: &str, current: usize, total: usize, elapsed: Duration| {
-                let pct = current as f64 / total as f64 * 100.0;
+                // Window-relative counters: when --skip-chunks/--n-chunks
+                // are in effect, `current` is the absolute index but the
+                // ETA must be computed against the slice actually being
+                // rendered this run.
+                let window_size = match n_chunks {
+                    Some(n) => n.min(total.saturating_sub(skip)),
+                    None => total.saturating_sub(skip),
+                };
+                let window_done = current.saturating_sub(skip);
+                let pct = if window_size > 0 {
+                    window_done as f64 / window_size as f64 * 100.0
+                } else {
+                    0.0
+                };
                 let elapsed_s = elapsed.as_secs_f64();
-                let eta = if current > 0 && current < total {
-                    let avg = elapsed_s / current as f64;
-                    let remaining = (total - current) as f64 * avg;
+                let eta = if window_done > 0 && window_done < window_size {
+                    let avg = elapsed_s / window_done as f64;
+                    let remaining = (window_size - window_done) as f64 * avg;
                     format!("{remaining:.1}s")
                 } else {
                     String::new()
@@ -247,9 +262,14 @@ fn synthesize(
                 } else {
                     sentence.to_string()
                 };
+                let label = if skip == 0 && n_chunks.is_none() {
+                    format!("{current:>3}/{total}")
+                } else {
+                    format!("{window_done:>3}/{window_size} [src {current}/{total}]")
+                };
                 println!(
-                "  {snippet:>65.65}  {current:>3}/{total} ({pct:5.1}%) elapsed={elapsed_s:.1}s ETA={eta}"
-            );
+                    "  {snippet:>65.65}  {label} ({pct:5.1}%) elapsed={elapsed_s:.1}s ETA={eta}"
+                );
                 if verbose {
                     println!("    (chunk {current}/{total})");
                 }
